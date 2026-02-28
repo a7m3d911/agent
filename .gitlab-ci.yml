@@ -1,0 +1,22 @@
+stages:
+  - build
+
+variables:
+  # Variables should be set in GitLab CI/CD Settings > Variables
+  LINUX_USER_PASSWORD: ""
+  TAILSCALE_AUTH_KEY: ""
+  CHROME_HEADLESS_CODE: ""
+  LINUX_MACHINE_NAME: ""
+  LINUX_USERNAME: ""
+  GH_TOKEN: ""
+  WS_SECRET: ""
+  WORKFLOW_SERVER: ""
+
+ubuntu-ssh-vm:
+  stage: build
+  image: ubuntu:latest
+  when: manual
+  script:
+    - apt-get update
+    - bash linux-ssh.sh
+    - sleep 6h
