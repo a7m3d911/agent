@@ -1,0 +1,48 @@
+name: AviRDP
+
+on: workflow_dispatch
+
+jobs:
+  build:
+
+    runs-on: windows-latest
+    timeout-minutes: 9999
+
+    steps:
+    - name: Download Tailscale.
+      run: |
+        Invoke-WebRequest https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi -OutFile tailscale.msi
+        Invoke-WebRequest https://raw.githubusercontent.com/avipatilpro/AviRDP/main/start.bat -OutFile start.bat
+        Invoke-WebRequest https://raw.githubusercontent.com/avipatilpro/AviRDP/main/wallpaper.png -OutFile wallpaper.png
+        Invoke-WebRequest https://raw.githubusercontent.com/avipatilpro/AviRDP/main/wallpaper.bat -OutFile wallpaper.bat
+        Invoke-WebRequest https://raw.githubusercontent.com/avipatilpro/AviRDP/main/loop.bat -OutFile loop.bat
+    - name: Download Launchers.
+      run: |
+        Invoke-WebRequest https://raw.githubusercontent.com/avipatilpro/AviRDP/main/launcher/Node.js.lnk -OutFile Node.js.lnk
+        Invoke-WebRequest https://raw.githubusercontent.com/avipatilpro/AviRDP/main/launcher/Visual%20Studio%202019.lnk -OutFile "Visual Studio 2019.lnk"
+        Invoke-WebRequest https://github.com/avipatilpro/AviRDP/raw/main/launcher/Ganti%20Password.exe -OutFile "Ganti Password.exe"
+    - name: Install Tailscale.
+      run: Start-Process msiexec.exe -ArgumentList '/i tailscale.msi /quiet /norestart' -Wait
+    - name: Connect to Tailscale.
+      run: |
+        & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$Env:TAILSCALE_AUTH_KEY --unattended --advertise-exit-node
+      env:
+        TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+    - name: Enable RDP Access.
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+        copy wallpaper.png D:\a\wallpaper.png
+        copy wallpaper.bat D:\a\wallpaper.bat
+        copy Node.js.lnk C:\Users\Public\Desktop\Node.js.lnk
+        copy "Visual Studio 2019.lnk" "C:\Users\Public\Desktop\Visual Studio 2019.lnk"
+        copy "Ganti Password.exe" "C:\Users\Public\Desktop\Ganti Password.exe"
+    - name: Show Tailscale IP for RDP Connection.
+      run: |
+        & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+        echo "Connect via RDP using the Tailscale IP above on port 3389"
+    - name: Connect to RDP - CPU 2 Core - 7GB Ram - 256 SSD.
+      run: cmd /c start.bat
+    - name: Done! You can close this tab now.
+      run: cmd /c loop.bat

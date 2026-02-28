@@ -1,0 +1,43 @@
+name: Keep Alive
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-and-trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if blank workflow is running
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          ACTIVE_RUNS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/actions/workflows/blank.yml/runs?status=in_progress" \
+            --jq '.total_count')
+
+          echo "Active runs: $ACTIVE_RUNS"
+
+          if [ "$ACTIVE_RUNS" -gt 0 ]; then
+            echo "running=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "running=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger blank workflow
+        if: steps.check.outputs.running == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          echo "No active run found. Triggering blank workflow..."
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/actions/workflows/blank.yml/dispatches" \
+            -f ref="main"
+          echo "Workflow triggered successfully."
