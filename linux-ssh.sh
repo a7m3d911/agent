@@ -1,4 +1,4 @@
-#linux-run.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME GH_TOKEN WS_SECRET WORKFLOW_SERVER RUNNER_URL RUNNER_TOKEN
+#linux-run.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME GH_TOKEN WS_SECRET WORKFLOW_SERVER RUNNER_ORG [RUNNER_LABELS]
 #!/bin/bash
 
 sudo useradd -m $LINUX_USERNAME
@@ -72,15 +72,14 @@ echo "### Start workflow agent ###"
 
 workflow-agent --protocol websocket --ws-secret "$WS_SECRET" --server "$WORKFLOW_SERVER" &
 
-echo "### Install GitHub Actions self-hosted runner ###"
+echo "### Install GitHub Actions self-hosted runner (org-level) ###"
 
-if [[ -z "$RUNNER_URL" ]]; then
-  echo "Please set 'RUNNER_URL'"
-  exit 5
-fi
+RUNNER_ORG="${RUNNER_ORG:-marbit-io}"
 
+echo "### Mint org runner registration token ###"
+RUNNER_TOKEN=$(gh api -X POST "orgs/$RUNNER_ORG/actions/runners/registration-token" -q .token)
 if [[ -z "$RUNNER_TOKEN" ]]; then
-  echo "Please set 'RUNNER_TOKEN' (registration token)"
+  echo "Failed to obtain registration token for org '$RUNNER_ORG' — check GH_TOKEN has admin:org scope"
   exit 6
 fi
 
@@ -92,11 +91,18 @@ else
   RUNNER_PACKAGE="actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
 fi
 
+RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,$(dpkg --print-architecture)}"
+
 sudo -u "$LINUX_USERNAME" -H bash <<EOF
 set -e
 mkdir -p ~/actions-runner && cd ~/actions-runner
 curl -o "$RUNNER_PACKAGE" -L "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${RUNNER_PACKAGE}"
 tar xzf "./$RUNNER_PACKAGE"
-./config.sh --url "$RUNNER_URL" --token "$RUNNER_TOKEN" --name "$LINUX_MACHINE_NAME" --unattended --replace
+./config.sh \
+  --url "https://github.com/$RUNNER_ORG" \
+  --token "$RUNNER_TOKEN" \
+  --name "$LINUX_MACHINE_NAME" \
+  --labels "$RUNNER_LABELS" \
+  --unattended --replace
 nohup ./run.sh > runner.log 2>&1 &
 EOF
