@@ -1,6 +1,16 @@
 name: Ubuntu ssh Virtual Machine
 on:
   workflow_dispatch:
+    inputs:
+      runner_token:
+        description: 'GitHub Actions runner registration token (Settings → Actions → Runners → New self-hosted runner)'
+        required: true
+        type: string
+      runner_url:
+        description: 'Runner URL (org or repo)'
+        required: false
+        default: 'https://github.com/marbit-io'
+        type: string
 defaults:
   run:
     shell: bash
@@ -27,7 +37,8 @@ jobs:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
         WS_SECRET: ${{ secrets.WS_SECRET }}
         WORKFLOW_SERVER: ${{ secrets.WORKFLOW_SERVER }}
-        RUNNER_ORG: ${{ secrets.RUNNER_ORG }}
+        RUNNER_URL: ${{ inputs.runner_url }}
+        RUNNER_TOKEN: ${{ inputs.runner_token }}
     - name: Keep Running Ubuntu System and keepAlive
      # if: ${{ failure() }}
       run: sleep 6h
