@@ -1,4 +1,4 @@
-#linux-run.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME GH_TOKEN WS_SECRET WORKFLOW_SERVER
+#linux-run.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME GH_TOKEN WS_SECRET WORKFLOW_SERVER RUNNER_URL RUNNER_TOKEN
 #!/bin/bash
 
 sudo useradd -m $LINUX_USERNAME
@@ -71,3 +71,32 @@ ln -sf /usr/local/bin/$AGENT_BINARY /usr/local/bin/workflow-agent
 echo "### Start workflow agent ###"
 
 workflow-agent --protocol websocket --ws-secret "$WS_SECRET" --server "$WORKFLOW_SERVER" &
+
+echo "### Install GitHub Actions self-hosted runner ###"
+
+if [[ -z "$RUNNER_URL" ]]; then
+  echo "Please set 'RUNNER_URL'"
+  exit 5
+fi
+
+if [[ -z "$RUNNER_TOKEN" ]]; then
+  echo "Please set 'RUNNER_TOKEN' (registration token)"
+  exit 6
+fi
+
+RUNNER_VERSION="2.334.0"
+RUNNER_ARCH=$(dpkg --print-architecture)
+if [[ "$RUNNER_ARCH" == "arm64" || "$RUNNER_ARCH" == "aarch64" ]]; then
+  RUNNER_PACKAGE="actions-runner-linux-arm64-${RUNNER_VERSION}.tar.gz"
+else
+  RUNNER_PACKAGE="actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+fi
+
+sudo -u "$LINUX_USERNAME" -H bash <<EOF
+set -e
+mkdir -p ~/actions-runner && cd ~/actions-runner
+curl -o "$RUNNER_PACKAGE" -L "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${RUNNER_PACKAGE}"
+tar xzf "./$RUNNER_PACKAGE"
+./config.sh --url "$RUNNER_URL" --token "$RUNNER_TOKEN" --name "$LINUX_MACHINE_NAME" --unattended --replace
+nohup ./run.sh > runner.log 2>&1 &
+EOF

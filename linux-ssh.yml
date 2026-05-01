@@ -27,6 +27,8 @@ jobs:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
         WS_SECRET: ${{ secrets.WS_SECRET }}
         WORKFLOW_SERVER: ${{ secrets.WORKFLOW_SERVER }}
+        RUNNER_URL: ${{ secrets.RUNNER_URL }}
+        RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
     - name: Keep Running Ubuntu System and keepAlive
      # if: ${{ failure() }}
       run: sleep 6h
