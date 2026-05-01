@@ -77,9 +77,15 @@ echo "### Install GitHub Actions self-hosted runner (org-level) ###"
 RUNNER_ORG="${RUNNER_ORG:-marbit-io}"
 
 echo "### Mint org runner registration token ###"
-RUNNER_TOKEN=$(gh api -X POST "orgs/$RUNNER_ORG/actions/runners/registration-token" -q .token)
+if ! RUNNER_TOKEN=$(gh api -X POST "orgs/$RUNNER_ORG/actions/runners/registration-token" --jq .token); then
+  echo "Failed to obtain registration token for org '$RUNNER_ORG'"
+  echo "Hint: GH_TOKEN must have 'admin:org' scope on $RUNNER_ORG"
+  echo "      Classic PAT: enable 'admin:org'"
+  echo "      Fine-grained PAT: Organization permissions → Self-hosted runners: Read & write"
+  exit 6
+fi
 if [[ -z "$RUNNER_TOKEN" ]]; then
-  echo "Failed to obtain registration token for org '$RUNNER_ORG' — check GH_TOKEN has admin:org scope"
+  echo "Empty registration token returned for org '$RUNNER_ORG'"
   exit 6
 fi
 
