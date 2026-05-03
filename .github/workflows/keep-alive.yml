@@ -31,7 +31,7 @@ jobs:
       - name: Trigger blank workflow
         if: steps.check.outputs.running == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
         run: |
           echo "No active run found. Triggering blank workflow..."
           gh api \
