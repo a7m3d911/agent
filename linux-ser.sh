@@ -1,4 +1,4 @@
-#linux-ser.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME [GDRIVE_TOKEN] [GDRIVE_FOLDER] [CONFIG_DEST]
+#linux-ser.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME [K3S_URL K3S_TOKEN] [GDRIVE_TOKEN] [GDRIVE_FOLDER] [CONFIG_DEST]
 #!/bin/bash
 #
 # Provisions a fresh Ubuntu/Debian box as a single-node Kubernetes server (k3s),
@@ -51,39 +51,59 @@ else
   exit 4
 fi
 
-echo "### Install k3s (single-node Kubernetes server) ###"
+# Mode: if K3S_URL + K3S_TOKEN are set, join an existing cluster as a worker node.
+#       Otherwise install as a standalone single-node server (control-plane + worker).
+#   K3S_URL   : https://<server-tailscale-ip>:6443
+#   K3S_TOKEN : contents of /var/lib/rancher/k3s/server/node-token on the server
+if [[ -n "$K3S_URL" && -n "$K3S_TOKEN" ]]; then
+  echo "### Join k3s cluster as worker node -> $K3S_URL ###"
 
-# Single binary = control-plane + worker + containerd + flannel CNI + local-path storage.
-# --write-kubeconfig-mode 644 so the created user can read kubeconfig without sudo.
-# --tls-san $LINUX_MACHINE_NAME / $TAILSCALE_IP so kubectl works over Tailscale from other machines.
-curl -sfL https://get.k3s.io | sh -s - \
-  --write-kubeconfig-mode 644 \
-  --node-name "$LINUX_MACHINE_NAME" \
-  --tls-san "$LINUX_MACHINE_NAME" \
-  --tls-san "$TAILSCALE_IP"
+  # K3S_URL/K3S_TOKEN in the env make the installer run 'k3s agent' (no control-plane).
+  curl -sfL https://get.k3s.io | K3S_URL="$K3S_URL" K3S_TOKEN="$K3S_TOKEN" sh -s - \
+    --node-name "$LINUX_MACHINE_NAME"
 
-echo "### Wait for k3s node to become Ready ###"
-until sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready '; do
-  echo "waiting for k3s..."
-  sleep 3
-done
+  echo ""
+  echo "=========================================="
+  echo "Joined as worker node: $LINUX_MACHINE_NAME"
+  echo "Verify from the SERVER: kubectl get nodes"
+  echo "Agent status here:      sudo systemctl status k3s-agent"
+  echo "=========================================="
+else
+  echo "### Install k3s (single-node Kubernetes server) ###"
 
-# Make kubeconfig usable by the created login user (kubectl reads ~/.kube/config).
-sudo mkdir -p /home/$LINUX_USERNAME/.kube
-sudo cp /etc/rancher/k3s/k3s.yaml /home/$LINUX_USERNAME/.kube/config
-sudo sed -i "s/127.0.0.1/$TAILSCALE_IP/g" /home/$LINUX_USERNAME/.kube/config
-sudo chown -R $LINUX_USERNAME:$LINUX_USERNAME /home/$LINUX_USERNAME/.kube
-sudo ln -sf /usr/local/bin/kubectl /usr/local/bin/k 2>/dev/null || true
+  # Single binary = control-plane + worker + containerd + flannel CNI + local-path storage.
+  # --write-kubeconfig-mode 644 so the created user can read kubeconfig without sudo.
+  # --tls-san $LINUX_MACHINE_NAME / $TAILSCALE_IP so kubectl works over Tailscale from other machines.
+  curl -sfL https://get.k3s.io | sh -s - \
+    --write-kubeconfig-mode 644 \
+    --node-name "$LINUX_MACHINE_NAME" \
+    --tls-san "$LINUX_MACHINE_NAME" \
+    --tls-san "$TAILSCALE_IP"
 
-echo ""
-echo "=========================================="
-echo "k3s ready. On this box:  sudo k3s kubectl get nodes"
-echo "As $LINUX_USERNAME:       kubectl get nodes"
-echo "Remote kubeconfig:       /home/$LINUX_USERNAME/.kube/config (API at https://$TAILSCALE_IP:6443)"
-echo "Join more nodes: run 'k3s agent' with token from /var/lib/rancher/k3s/server/node-token"
-echo "=========================================="
+  echo "### Wait for k3s node to become Ready ###"
+  until sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready '; do
+    echo "waiting for k3s..."
+    sleep 3
+  done
 
-echo 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml' >> ~/.bashrc
+  # Make kubeconfig usable by the created login user (kubectl reads ~/.kube/config).
+  sudo mkdir -p /home/$LINUX_USERNAME/.kube
+  sudo cp /etc/rancher/k3s/k3s.yaml /home/$LINUX_USERNAME/.kube/config
+  sudo sed -i "s/127.0.0.1/$TAILSCALE_IP/g" /home/$LINUX_USERNAME/.kube/config
+  sudo chown -R $LINUX_USERNAME:$LINUX_USERNAME /home/$LINUX_USERNAME/.kube
+  sudo ln -sf /usr/local/bin/kubectl /usr/local/bin/k 2>/dev/null || true
+
+  echo ""
+  echo "=========================================="
+  echo "k3s ready. On this box:  sudo k3s kubectl get nodes"
+  echo "As $LINUX_USERNAME:       kubectl get nodes"
+  echo "Remote kubeconfig:       /home/$LINUX_USERNAME/.kube/config (API at https://$TAILSCALE_IP:6443)"
+  echo "Join a worker: re-run this script on another box with K3S_URL=https://$TAILSCALE_IP:6443"
+  echo "               and K3S_TOKEN from /var/lib/rancher/k3s/server/node-token"
+  echo "=========================================="
+
+  echo 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml' >> ~/.bashrc
+fi
 
 ### Sync configurations from Google Drive (optional) ###
 

@@ -27,6 +27,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GDRIVE_FOLDER: ${{ secrets.GDRIVE_FOLDER }}
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          K3S_URL: ${{ secrets.K3S_URL }}
+          K3S_TOKEN: ${{ secrets.K3S_TOKEN }}
       - name: Keep Running Ubuntu System and keepAlive
         # if: ${{ failure() }}
         run: sleep 6h
