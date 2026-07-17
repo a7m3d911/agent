@@ -51,6 +51,11 @@ else
   exit 4
 fi
 
+# NFS client — required on every node so pods can mount NFS-backed PersistentVolumes.
+# Without it kubelet's mount fails with "you might need a /sbin/mount.<type> helper program".
+echo "### Install NFS client (nfs-common) ###"
+sudo apt-get update && sudo apt-get install -y nfs-common
+
 # Mode: if K3S_URL + K3S_TOKEN are set, join an existing cluster as a worker node.
 #       Otherwise install as a standalone single-node server (control-plane + worker).
 #   K3S_URL   : https://<server-tailscale-ip>:6443
