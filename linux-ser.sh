@@ -68,7 +68,11 @@ if [[ -n "$K3S_URL" && -n "$K3S_TOKEN" ]]; then
   # don't collide ("Node password rejected, duplicate hostname").
   curl -sfL https://get.k3s.io | K3S_URL="$K3S_URL" K3S_TOKEN="$K3S_TOKEN" sh -s - \
     --node-name "$LINUX_MACHINE_NAME" \
-    --with-node-id
+    --with-node-id \
+    --node-ip "$TAILSCALE_IP" \
+    --flannel-iface tailscale0 \
+    --kubelet-arg="shutdown-grace-period=90s" \
+    --kubelet-arg="shutdown-grace-period-critical-pods=30s"
 
   echo ""
   echo "=========================================="
@@ -82,9 +86,14 @@ else
   # Single binary = control-plane + worker + containerd + flannel CNI + local-path storage.
   # --write-kubeconfig-mode 644 so the created user can read kubeconfig without sudo.
   # --tls-san $LINUX_MACHINE_NAME / $TAILSCALE_IP so kubectl works over Tailscale from other machines.
+  # --node-ip / --flannel-iface MUST match the agents (which join on tailscale0):
+  # otherwise the server advertises its flannel VXLAN endpoint on the public NIC,
+  # agents expect it on tailscale0, and cross-node pod traffic (incl. CoreDNS) breaks.
   curl -sfL https://get.k3s.io | sh -s - \
     --write-kubeconfig-mode 644 \
     --node-name "$LINUX_MACHINE_NAME" \
+    --node-ip "$TAILSCALE_IP" \
+    --flannel-iface tailscale0 \
     --tls-san "$LINUX_MACHINE_NAME" \
     --tls-san "$TAILSCALE_IP"
 
