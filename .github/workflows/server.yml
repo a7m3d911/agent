@@ -25,8 +25,8 @@ jobs:
           LINUX_MACHINE_NAME: ${{ secrets.LINUX_MACHINE_NAME }}
           LINUX_USERNAME: ${{ secrets.LINUX_USERNAME }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          WS_SECRET: ${{ secrets.WS_SECRET }}
-          WORKFLOW_SERVER: ${{ secrets.WORKFLOW_SERVER }}
+          GDRIVE_FOLDER: ${{ secrets.GDRIVE_FOLDER }}
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
       - name: Keep Running Ubuntu System and keepAlive
         # if: ${{ failure() }}
         run: sleep 6h

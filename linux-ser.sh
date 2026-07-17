@@ -1,4 +1,4 @@
-#linux-ser.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME
+#linux-ser.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME [GDRIVE_TOKEN] [GDRIVE_FOLDER] [CONFIG_DEST]
 #!/bin/bash
 #
 # Provisions a fresh Ubuntu/Debian box as a single-node Kubernetes server (k3s),
@@ -82,3 +82,45 @@ echo "As $LINUX_USERNAME:       kubectl get nodes"
 echo "Remote kubeconfig:       /home/$LINUX_USERNAME/.kube/config (API at https://$TAILSCALE_IP:6443)"
 echo "Join more nodes: run 'k3s agent' with token from /var/lib/rancher/k3s/server/node-token"
 echo "=========================================="
+
+echo 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml' >> ~/.bashrc
+
+### Sync configurations from Google Drive (optional) ###
+
+# Provisioning is unattended, so we can't run rclone's interactive OAuth here.
+# Instead authorize ONCE on your laptop and pass the token in via GDRIVE_TOKEN:
+#     rclone authorize "drive"   # copy the JSON token it prints
+# GDRIVE_FOLDER : Drive path to pull (default "configs")
+# CONFIG_DEST   : where to place them locally (default /home/$LINUX_USERNAME/configs)
+if [[ -n "$GDRIVE_TOKEN" ]]; then
+  GDRIVE_FOLDER="${GDRIVE_FOLDER:-configs}"
+  CONFIG_DEST="${CONFIG_DEST:-/home/$LINUX_USERNAME/configs}"
+
+  echo "### Install rclone ###"
+  curl -fsSL https://rclone.org/install.sh | sudo bash
+
+  echo "### Write rclone config for user: $LINUX_USERNAME ###"
+  sudo -u "$LINUX_USERNAME" mkdir -p "/home/$LINUX_USERNAME/.config/rclone"
+  sudo tee "/home/$LINUX_USERNAME/.config/rclone/rclone.conf" > /dev/null <<CONF
+[gdrive]
+type = drive
+scope = drive
+token = $GDRIVE_TOKEN
+CONF
+  sudo chown -R "$LINUX_USERNAME:$LINUX_USERNAME" "/home/$LINUX_USERNAME/.config"
+  sudo chmod 600 "/home/$LINUX_USERNAME/.config/rclone/rclone.conf"
+
+  echo "### Initial sync: gdrive:$GDRIVE_FOLDER -> $CONFIG_DEST ###"
+  sudo -u "$LINUX_USERNAME" mkdir -p "$CONFIG_DEST"
+  # copy (add/update only) — never deletes local files. Swap to 'sync' for a strict mirror.
+  sudo -u "$LINUX_USERNAME" rclone copy "gdrive:$GDRIVE_FOLDER" "$CONFIG_DEST"
+
+  echo "### Schedule config sync every 5 min (cron) ###"
+  ( sudo -u "$LINUX_USERNAME" crontab -l 2>/dev/null; \
+    echo "*/5 * * * * rclone copy gdrive:$GDRIVE_FOLDER $CONFIG_DEST >/dev/null 2>&1" ) \
+    | sudo -u "$LINUX_USERNAME" crontab -
+
+  echo "Configs synced to $CONFIG_DEST (refreshes every 5 min)"
+else
+  echo "### GDRIVE_TOKEN not set — skipping Google Drive config sync ###"
+fi
