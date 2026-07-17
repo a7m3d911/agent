@@ -64,8 +64,11 @@ if [[ -n "$K3S_URL" && -n "$K3S_TOKEN" ]]; then
   echo "### Join k3s cluster as worker node -> $K3S_URL ###"
 
   # K3S_URL/K3S_TOKEN in the env make the installer run 'k3s agent' (no control-plane).
+  # --with-node-id appends a unique suffix so two boxes sharing LINUX_MACHINE_NAME
+  # don't collide ("Node password rejected, duplicate hostname").
   curl -sfL https://get.k3s.io | K3S_URL="$K3S_URL" K3S_TOKEN="$K3S_TOKEN" sh -s - \
-    --node-name "$LINUX_MACHINE_NAME"
+    --node-name "$LINUX_MACHINE_NAME" \
+    --with-node-id
 
   echo ""
   echo "=========================================="
