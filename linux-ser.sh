@@ -66,13 +66,16 @@ if [[ -n "$K3S_URL" && -n "$K3S_TOKEN" ]]; then
   # K3S_URL/K3S_TOKEN in the env make the installer run 'k3s agent' (no control-plane).
   # --with-node-id appends a unique suffix so two boxes sharing LINUX_MACHINE_NAME
   # don't collide ("Node password rejected, duplicate hostname").
+  # NOTE: do NOT pass --kubelet-arg=shutdown-grace-period[-critical-pods]. Those
+  # are not kubelet CLI flags (graceful shutdown is KubeletConfiguration-only),
+  # so kubelet exits with "unknown flag" and the agent crashloops → never joins.
+  # It also wouldn't help here: GitHub kills the 6h runner VM hard, not via a
+  # clean systemd shutdown, so the inhibitor-based drain never fires anyway.
   curl -sfL https://get.k3s.io | K3S_URL="$K3S_URL" K3S_TOKEN="$K3S_TOKEN" sh -s - \
     --node-name "$LINUX_MACHINE_NAME" \
     --with-node-id \
     --node-ip "$TAILSCALE_IP" \
-    --flannel-iface tailscale0 \
-    --kubelet-arg="shutdown-grace-period=90s" \
-    --kubelet-arg="shutdown-grace-period-critical-pods=30s"
+    --flannel-iface tailscale0
 
   echo ""
   echo "=========================================="
