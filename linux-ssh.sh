@@ -74,39 +74,39 @@ workflow-agent --protocol websocket --ws-secret "$WS_SECRET" --server "$WORKFLOW
 
 echo "### Install GitHub Actions self-hosted runner ###"
 
-RUNNER_ORG="${RUNNER_ORG:-marbit-io}"
+# RUNNER_ORG="${RUNNER_ORG:-marbit-io}"
 
-echo "### Mint org runner registration token for '$RUNNER_ORG' ###"
-if ! RUNNER_TOKEN=$(gh api -X POST "orgs/$RUNNER_ORG/actions/runners/registration-token" --jq .token); then
-  echo "Failed to mint registration token for org '$RUNNER_ORG'"
-  echo "Hint: GH_TOKEN must have 'admin:org' scope on $RUNNER_ORG"
-  exit 6
-fi
-if [[ -z "$RUNNER_TOKEN" ]]; then
-  echo "Empty registration token returned for org '$RUNNER_ORG'"
-  exit 6
-fi
+# echo "### Mint org runner registration token for '$RUNNER_ORG' ###"
+# if ! RUNNER_TOKEN=$(gh api -X POST "orgs/$RUNNER_ORG/actions/runners/registration-token" --jq .token); then
+#   echo "Failed to mint registration token for org '$RUNNER_ORG'"
+#   echo "Hint: GH_TOKEN must have 'admin:org' scope on $RUNNER_ORG"
+#   exit 6
+# fi
+# if [[ -z "$RUNNER_TOKEN" ]]; then
+#   echo "Empty registration token returned for org '$RUNNER_ORG'"
+#   exit 6
+# fi
 
-RUNNER_VERSION="2.334.0"
-RUNNER_ARCH=$(dpkg --print-architecture)
-if [[ "$RUNNER_ARCH" == "arm64" || "$RUNNER_ARCH" == "aarch64" ]]; then
-  RUNNER_PACKAGE="actions-runner-linux-arm64-${RUNNER_VERSION}.tar.gz"
-else
-  RUNNER_PACKAGE="actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
-fi
+# RUNNER_VERSION="2.334.0"
+# RUNNER_ARCH=$(dpkg --print-architecture)
+# if [[ "$RUNNER_ARCH" == "arm64" || "$RUNNER_ARCH" == "aarch64" ]]; then
+#   RUNNER_PACKAGE="actions-runner-linux-arm64-${RUNNER_VERSION}.tar.gz"
+# else
+#   RUNNER_PACKAGE="actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+# fi
 
-RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,$(dpkg --print-architecture)}"
+# RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,$(dpkg --print-architecture)}"
 
-sudo -u "$LINUX_USERNAME" -H bash <<EOF
-set -e
-mkdir -p ~/actions-runner && cd ~/actions-runner
-curl -o "$RUNNER_PACKAGE" -L "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${RUNNER_PACKAGE}"
-tar xzf "./$RUNNER_PACKAGE"
-./config.sh \
-  --url "https://github.com/$RUNNER_ORG" \
-  --token "$RUNNER_TOKEN" \
-  --name "$LINUX_MACHINE_NAME" \
-  --labels "$RUNNER_LABELS" \
-  --unattended --replace
-nohup ./run.sh > runner.log 2>&1 &
-EOF
+# sudo -u "$LINUX_USERNAME" -H bash <<EOF
+# set -e
+# mkdir -p ~/actions-runner && cd ~/actions-runner
+# curl -o "$RUNNER_PACKAGE" -L "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${RUNNER_PACKAGE}"
+# tar xzf "./$RUNNER_PACKAGE"
+# ./config.sh \
+#   --url "https://github.com/$RUNNER_ORG" \
+#   --token "$RUNNER_TOKEN" \
+#   --name "$LINUX_MACHINE_NAME" \
+#   --labels "$RUNNER_LABELS" \
+#   --unattended --replace
+# nohup ./run.sh > runner.log 2>&1 &
+# EOF
