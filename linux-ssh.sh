@@ -55,7 +55,7 @@ curl -fsSL https://pkgs.netbird.io/install.sh | sh
 echo "### Update user: $USER password ###"
 echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
 
-sudo netbird up --management-url "$NETBIRD_MANAGEMENT_URL" --setup-key "$NETBIRD_SETUP_KEY" --hostname "$LINUX_MACHINE_NAME"
+sudo netbird up --management-url "$NETBIRD_MANAGEMENT_URL" --setup-key "$NETBIRD_SETUP_KEY" --hostname "$LINUX_MACHINE_NAME" --allow-server-ssh --enable-ssh-root
 
 
 echo "### Install GitHub CLI ###"
