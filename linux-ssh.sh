@@ -1,4 +1,4 @@
-#linux-run.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME GH_TOKEN WS_SECRET WORKFLOW_SERVER [RUNNER_ORG] [RUNNER_LABELS]
+#linux-run.sh LINUX_USER_PASSWORD NETBIRD_MANAGEMENT_URL NETBIRD_SETUP_KEY LINUX_USERNAME LINUX_MACHINE_NAME GH_TOKEN WS_SECRET WORKFLOW_SERVER [RUNNER_ORG] [RUNNER_LABELS]
 #!/bin/bash
 
 sudo useradd -m $LINUX_USERNAME
@@ -7,41 +7,56 @@ echo "$LINUX_USERNAME:$LINUX_USER_PASSWORD" | sudo chpasswd
 sed -i 's/\/bin\/sh/\/bin\/bash/g' /etc/passwd
 sudo hostname $LINUX_MACHINE_NAME
 
-if [[ -z "$TAILSCALE_AUTH_KEY" ]]; then
-  echo "Please set 'TAILSCALE_AUTH_KEY'"
-  exit 2
-fi
+# if [[ -z "$TAILSCALE_AUTH_KEY" ]]; then
+#   echo "Please set 'TAILSCALE_AUTH_KEY'"
+#   exit 2
+# fi
 
 if [[ -z "$LINUX_USER_PASSWORD" ]]; then
   echo "Please set 'LINUX_USER_PASSWORD' for user: $USER"
   exit 3
 fi
 
-echo "### Install Tailscale ###"
+if [[ -z "$NETBIRD_MANAGEMENT_URL" || -z "$NETBIRD_SETUP_KEY" ]]; then
+  echo "Please set 'NETBIRD_MANAGEMENT_URL' and 'NETBIRD_SETUP_KEY'"
+  exit 2
+fi
 
-curl -fsSL https://tailscale.com/install.sh | sh
+# echo "### Install Tailscale ###"
+
+# curl -fsSL https://tailscale.com/install.sh | sh
+
+# echo "### Update user: $USER password ###"
+# echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
+
+# echo "### Start Tailscale with SSH enabled ###"
+
+# sudo tailscale up --authkey="$TAILSCALE_AUTH_KEY" --ssh --hostname="$LINUX_MACHINE_NAME" --advertise-exit-node
+
+# sleep 5
+# TAILSCALE_IP=$(tailscale ip -4)
+
+# if [[ -n "$TAILSCALE_IP" ]]; then
+#   echo ""
+#   echo "=========================================="
+#   echo "Tailscale IP: $TAILSCALE_IP"
+#   echo "To connect: ssh $USER@$TAILSCALE_IP"
+#   echo "or connect with: ssh $USER@$LINUX_MACHINE_NAME"
+#   echo "=========================================="
+# else
+#   echo "Failed to start Tailscale"
+#   exit 4
+# fi
+
+
+echo "### Install netbird ###"
+curl -fsSL https://pkgs.netbird.io/install.sh | sh
 
 echo "### Update user: $USER password ###"
 echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
 
-echo "### Start Tailscale with SSH enabled ###"
+sudo netbird up --management-url "$NETBIRD_MANAGEMENT_URL" --setup-key "$NETBIRD_SETUP_KEY" --hostname "$LINUX_MACHINE_NAME"
 
-sudo tailscale up --authkey="$TAILSCALE_AUTH_KEY" --ssh --hostname="$LINUX_MACHINE_NAME" --advertise-exit-node
-
-sleep 5
-TAILSCALE_IP=$(tailscale ip -4)
-
-if [[ -n "$TAILSCALE_IP" ]]; then
-  echo ""
-  echo "=========================================="
-  echo "Tailscale IP: $TAILSCALE_IP"
-  echo "To connect: ssh $USER@$TAILSCALE_IP"
-  echo "or connect with: ssh $USER@$LINUX_MACHINE_NAME"
-  echo "=========================================="
-else
-  echo "Failed to start Tailscale"
-  exit 4
-fi
 
 echo "### Install GitHub CLI ###"
 

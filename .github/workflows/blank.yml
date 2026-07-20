@@ -20,7 +20,8 @@ jobs:
         run: bash linux-ssh.sh
         env:
           LINUX_USER_PASSWORD: ${{ secrets.LINUX_USER_PASSWORD }}
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          NETBIRD_MANAGEMENT_URL: ${{ secrets.NETBIRD_MANAGEMENT_URL }}
+          NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
           CHROME_HEADLESS_CODE: ${{ secrets.CHROME_HEADLESS_CODE }}
           LINUX_MACHINE_NAME: ${{ secrets.LINUX_MACHINE_NAME }}
           LINUX_USERNAME: ${{ secrets.LINUX_USERNAME }}
