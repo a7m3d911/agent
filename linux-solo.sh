@@ -107,6 +107,11 @@ fi
 
 echo "### Install k3s (standalone single-node cluster) ###"
 
+# get.k3s.io switches to agent mode purely from the ENV. If K3S_URL/K3S_TOKEN
+# leak in from the CI job, we'd silently install an agent joining someone else's
+# cluster instead of a server. This script is standalone-only, so drop them.
+unset K3S_URL K3S_TOKEN
+
 # Single binary = control-plane + worker + containerd + flannel CNI + local-path storage.
 # --write-kubeconfig-mode 644 so the created user can read kubeconfig without sudo.
 # --tls-san so kubectl works over Tailscale from other machines.
