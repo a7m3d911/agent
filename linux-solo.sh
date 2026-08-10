@@ -71,10 +71,18 @@ sudo apt-get update && sudo apt-get install -y nfs-common
 # Authorize ONCE on your laptop and pass the token in via GDRIVE_TOKEN:
 #     rclone authorize "drive"   # copy the JSON token it prints
 # GDRIVE_FOLDER : Drive path to pull (default "configs")
-# CONFIG_DEST   : where to place them (default = k3s auto-apply manifests dir)
+# CONFIG_DEST   : full local copy of that folder (default /opt/configs)
+#
+# Two destinations, because the Drive folder is no longer just manifests:
+#   $CONFIG_DEST     — whole tree (init.sh, apps/ kustomize overlays, yaml)
+#   $MANIFEST_DIR    — ONLY the top-level *.yaml, which k3s auto-applies.
+# apps/ must stay out of the manifests dir: k3s walks it recursively and would
+# apply the overlay's raw files un-kustomized (and choke on kustomization.yaml).
+MANIFEST_DIR=/var/lib/rancher/k3s/server/manifests
+
 if [[ -n "$GDRIVE_TOKEN" ]]; then
   GDRIVE_FOLDER="${GDRIVE_FOLDER:-configs}"
-  CONFIG_DEST="${CONFIG_DEST:-/var/lib/rancher/k3s/server/manifests}"
+  CONFIG_DEST="${CONFIG_DEST:-/opt/configs}"
 
   echo "### Install rclone ###"
   curl -fsSL https://rclone.org/install.sh | sudo bash
@@ -90,17 +98,18 @@ CONF
   sudo chmod 600 /root/.config/rclone/rclone.conf
 
   echo "### Initial sync: gdrive:$GDRIVE_FOLDER -> $CONFIG_DEST ###"
-  sudo mkdir -p "$CONFIG_DEST"
+  sudo mkdir -p "$CONFIG_DEST" "$MANIFEST_DIR"
   # copy (add/update only) — never deletes local files, so a Drive hiccup can't
   # empty the manifests dir and tear the app down. Use 'sync' for a strict mirror.
   sudo rclone copy "gdrive:$GDRIVE_FOLDER" "$CONFIG_DEST"
+  sudo rclone copy "$CONFIG_DEST" "$MANIFEST_DIR" --max-depth 1 --include "*.yaml"
 
   echo "### Schedule config sync every 5 min (root cron) ###"
   ( sudo crontab -l 2>/dev/null; \
-    echo "*/5 * * * * rclone copy gdrive:$GDRIVE_FOLDER $CONFIG_DEST >/dev/null 2>&1" ) \
+    echo "*/5 * * * * rclone copy gdrive:$GDRIVE_FOLDER $CONFIG_DEST >/dev/null 2>&1 && rclone copy $CONFIG_DEST $MANIFEST_DIR --max-depth 1 --include '*.yaml' >/dev/null 2>&1" ) \
     | sudo crontab -
 
-  echo "Configs synced to $CONFIG_DEST (refreshes every 5 min, k3s auto-applies)"
+  echo "Configs synced to $CONFIG_DEST (refreshes every 5 min; *.yaml auto-applied by k3s)"
 else
   echo "### GDRIVE_TOKEN not set — skipping Google Drive config sync ###"
 fi
@@ -170,11 +179,41 @@ sudo ln -sf /usr/local/bin/kubectl /usr/local/bin/k 2>/dev/null || true
 
 echo 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml' >> ~/.bashrc
 
+### Run the one-shot bootstrap from Drive ###
+#
+# init.sh does the things the manifests dir can't: kustomize overlays, secrets
+# built from CI credentials, third-party operator installs. It runs ONCE per box
+# (each VM is a brand-new empty cluster, so "once" is per boot, not ever), unlike
+# the *.yaml above which the 5-min cron keeps reconciling.
+# Needs from the CI job: GHCR_USER, GHCR_PAT, DOPPLER_TOKEN.
+if [[ -f "$CONFIG_DEST/init.sh" ]]; then
+  # init.sh reads the Doppler token via the CLI, so install and seed it first.
+  if [[ -n "$DOPPLER_TOKEN" ]]; then
+    echo "### Install Doppler CLI ###"
+    curl -sLf --retry 3 https://cli.doppler.com/install.sh | sudo sh
+    sudo doppler configure set token "$DOPPLER_TOKEN" --scope /
+  else
+    echo "WARNING: DOPPLER_TOKEN unset — init.sh will create an empty doppler-token-secret"
+  fi
+
+  echo "### Run init.sh from $CONFIG_DEST ###"
+  # cd first: init.sh applies relative paths like ./apps/app-accounts/dev
+  ( cd "$CONFIG_DEST" && sudo env \
+      KUBECONFIG=/etc/rancher/k3s/k3s.yaml \
+      GHCR_USER="$GHCR_USER" \
+      GHCR_PAT="$GHCR_PAT" \
+      DOPPLER_TOKEN="$DOPPLER_TOKEN" \
+      bash init.sh ) 2>&1 | tee /var/log/init-sh.log
+  echo "init.sh finished (exit ${PIPESTATUS[0]}) — full log at /var/log/init-sh.log"
+else
+  echo "### No init.sh in $CONFIG_DEST — skipping bootstrap ###"
+fi
+
 echo ""
 echo "=========================================="
 echo "Standalone cluster ready: $LINUX_MACHINE_NAME"
 echo "On this box:        sudo k3s kubectl get nodes"
 echo "As $LINUX_USERNAME:  kubectl get nodes"
 echo "Remote kubeconfig:  /home/$LINUX_USERNAME/.kube/config (API at https://$TAILSCALE_IP:6443)"
-echo "Manifests:          ${CONFIG_DEST:-<no gdrive sync>} (auto-applied by k3s)"
+echo "Configs:            ${CONFIG_DEST:-<no gdrive sync>} (top-level *.yaml auto-applied by k3s)"
 echo "=========================================="
