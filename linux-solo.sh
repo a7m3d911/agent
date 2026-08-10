@@ -105,6 +105,30 @@ else
   echo "### GDRIVE_TOKEN not set — skipping Google Drive config sync ###"
 fi
 
+### Pin the cluster CA so the kubeconfig never changes ###
+#
+# A fresh k3s install mints a brand-new CA and admin client cert, so every VM
+# would hand you a different kubeconfig. Keep the CA in Drive instead: the first
+# boot generates and uploads it, every later boot restores it before k3s starts.
+# Same CA => a kubeconfig saved once stays valid against every future box; only
+# the server URL changes. Only the CA keypairs + service.key are carried over —
+# the node-specific serving certs are left to regenerate for this box's IP.
+# GDRIVE_TLS : Drive folder holding the CA (default "k3s-tls")
+K3S_TLS_DIR=/var/lib/rancher/k3s/server/tls
+CA_FILTER=(--include "*-ca.crt" --include "*-ca.key" --include "service.key")
+
+if [[ -n "$GDRIVE_TOKEN" ]]; then
+  GDRIVE_TLS="${GDRIVE_TLS:-k3s-tls}"
+  echo "### Restore cluster CA: gdrive:$GDRIVE_TLS -> $K3S_TLS_DIR ###"
+  sudo mkdir -p "$K3S_TLS_DIR"
+  sudo rclone copy "gdrive:$GDRIVE_TLS" "$K3S_TLS_DIR" "${CA_FILTER[@]}"
+  if [[ -f "$K3S_TLS_DIR/server-ca.crt" ]]; then
+    echo "Reusing existing CA — your saved kubeconfig still works"
+  else
+    echo "No CA in Drive yet — k3s will generate one and we upload it below"
+  fi
+fi
+
 echo "### Install k3s (standalone single-node cluster) ###"
 
 # get.k3s.io switches to agent mode purely from the ENV. If K3S_URL/K3S_TOKEN
@@ -123,6 +147,13 @@ curl -sfL https://get.k3s.io | sh -s - \
   --flannel-iface tailscale0 \
   --tls-san "$LINUX_MACHINE_NAME" \
   --tls-san "$TAILSCALE_IP"
+
+# First boot only in practice: rclone copy skips files Drive already has, so
+# later boots re-upload nothing and the CA stays whatever the first box minted.
+if [[ -n "$GDRIVE_TOKEN" ]]; then
+  echo "### Back up cluster CA -> gdrive:$GDRIVE_TLS ###"
+  sudo rclone copy "$K3S_TLS_DIR" "gdrive:$GDRIVE_TLS" "${CA_FILTER[@]}"
+fi
 
 echo "### Wait for k3s node to become Ready ###"
 until sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready '; do
