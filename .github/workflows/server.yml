@@ -17,7 +17,7 @@ jobs:
       - name: Setting Up the Ubuntu Environment
         #  if: ${{ failure() }}
         # run: bash macos-run.sh
-        run: bash linux-ser.sh
+        run: bash linux-solo.sh
         env:
           LINUX_USER_PASSWORD: ${{ secrets.LINUX_USER_PASSWORD }}
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
