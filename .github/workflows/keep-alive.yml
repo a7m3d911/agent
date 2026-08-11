@@ -1,5 +1,10 @@
 name: Keep Alive
 
+# Safety net only. The staggered rotation is driven by server.yml's own 3h cron;
+# this exists to recover when a scheduled run is skipped or a cluster dies early,
+# which would otherwise leave the site with one cluster (or none) until the next
+# scheduled tick.
+
 on:
   schedule:
     - cron: '*/10 * * * *'
@@ -8,36 +13,30 @@ on:
 jobs:
   check-and-trigger:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
     steps:
-      - name: Check if blank workflow is running
-        id: check
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Ensure at least two clusters are alive
         run: |
-          ACTIVE_RUNS=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "/repos/${{ github.repository }}/actions/workflows/blank.yml/runs?status=in_progress" \
-            --jq '.total_count')
+          # Count queued as well as in_progress: a run sitting in the queue is a
+          # cluster on its way up, and counting only in_progress double-dispatches.
+          count() {
+            local q ip
+            q=$(gh api "/repos/${{ github.repository }}/actions/workflows/$1/runs?status=queued" --jq '.total_count')
+            ip=$(gh api "/repos/${{ github.repository }}/actions/workflows/$1/runs?status=in_progress" --jq '.total_count')
+            echo $((q + ip))
+          }
 
-          echo "Active runs: $ACTIVE_RUNS"
+          ACTIVE=$(count server.yml)
+          echo "Active server.yml runs: $ACTIVE"
 
-          if [ "$ACTIVE_RUNS" -gt 0 ]; then
-            echo "running=true" >> "$GITHUB_OUTPUT"
+          # Two staggered clusters is the steady state. Below that we are one
+          # failure away from an outage, so top up immediately.
+          if [ "$ACTIVE" -lt 2 ]; then
+            echo "Only $ACTIVE cluster(s) alive — dispatching another."
+            gh api --method POST \
+              "/repos/${{ github.repository }}/actions/workflows/server.yml/dispatches" \
+              -f ref="main"
           else
-            echo "running=false" >> "$GITHUB_OUTPUT"
+            echo "Steady state — nothing to do."
           fi
-
-      - name: Trigger blank workflow
-        if: steps.check.outputs.running == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
-        run: |
-          echo "No active run found. Triggering blank workflow..."
-          gh api \
-            --method POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "/repos/${{ github.repository }}/actions/workflows/blank.yml/dispatches" \
-            -f ref="main"
-          echo "Workflow triggered successfully."

@@ -1,14 +1,35 @@
-#linux-solo.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME [GDRIVE_TOKEN] [GDRIVE_FOLDER] [CONFIG_DEST]
+#linux-solo.sh LINUX_USER_PASSWORD LINUX_USERNAME LINUX_MACHINE_NAME [VPN_PROVIDER] [TAILSCALE_AUTH_KEY | NETBIRD_MANAGEMENT_URL NETBIRD_SETUP_KEY] [GDRIVE_TOKEN] [GDRIVE_FOLDER] [CONFIG_DEST]
 #!/bin/bash
 #
 # Provisions a fresh Ubuntu/Debian box as a STANDALONE single-node k3s cluster
-# (control-plane + worker) reachable over Tailscale, then pulls all manifests
-# from Google Drive so the cluster deploys itself.
+# (control-plane + worker) on a VPN mesh, then pulls all manifests from Google
+# Drive so the cluster deploys itself.
 #
-# Difference vs linux-ser.sh: this box never joins another cluster — it IS the
-# cluster. Runner VMs die every ~6h, so instead of nodes leaving/rejoining one
-# control-plane, each VM stands up its own full copy of the app and the tunnel
-# fans traffic across whichever copies are alive.
+# This box never joins another cluster — it IS the cluster. Runner VMs die every
+# ~6h, so instead of nodes leaving and rejoining one control-plane, two clusters
+# run staggered: each new box comes up as a STANDBY of the live primary, and the
+# outgoing box hands over before it is killed. Continuity comes from four places:
+#   - the shared Cloudflare tunnel (both clusters serve the same hostnames)
+#   - Postgres streaming replication + WAL archive to R2
+#   - Redis replication during the overlap
+#   - this script's role handshake, coordinated through Drive
+#
+# Role for this boot is decided in decide_role() below and written to
+# /opt/cluster.env for init.sh and handoff.sh to read.
+
+set -o pipefail
+
+SCRIPT_START=$(date +%s)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# GitHub kills the VM 6h after the job starts. We know that deadline in advance,
+# which is the whole reason a *planned* handoff is possible instead of a crash.
+JOB_TTL_SECONDS="${JOB_TTL_SECONDS:-21600}"
+HANDOFF_LEAD_SECONDS="${HANDOFF_LEAD_SECONDS:-900}"   # start handing over 15m before the kill
+
+### Identity — must be unique, two of these are alive at once ###
+
+CLUSTER_ID="${LINUX_MACHINE_NAME}-${GITHUB_RUN_NUMBER:-$SCRIPT_START}"
 
 ### Create login user with sudo ###
 
@@ -16,50 +37,40 @@ sudo useradd -m $LINUX_USERNAME
 sudo adduser $LINUX_USERNAME sudo
 echo "$LINUX_USERNAME:$LINUX_USER_PASSWORD" | sudo chpasswd
 sed -i 's/\/bin\/sh/\/bin\/bash/g' /etc/passwd
-sudo hostname $LINUX_MACHINE_NAME
+sudo hostname "$CLUSTER_ID"
 
 ### Validate required inputs ###
-
-if [[ -z "$TAILSCALE_AUTH_KEY" ]]; then
-  echo "Please set 'TAILSCALE_AUTH_KEY'"
-  exit 2
-fi
 
 if [[ -z "$LINUX_USER_PASSWORD" ]]; then
   echo "Please set 'LINUX_USER_PASSWORD' for user: $USER"
   exit 3
 fi
 
-echo "### Install Tailscale ###"
+echo "### Install base tooling (jq, nfs-common) ###"
+# jq: discovery.sh parses the Drive registry with it.
+# nfs-common: kubelet needs it to mount NFS-backed PVs ("no /sbin/mount.<type>").
+sudo apt-get update && sudo apt-get install -y jq nfs-common
 
-curl -fsSL https://tailscale.com/install.sh | sh
+echo "### Bring up the VPN mesh (provider: ${VPN_PROVIDER:-tailscale}) ###"
+
+source "$SCRIPT_DIR/scripts/vpn.sh"
+source "$SCRIPT_DIR/scripts/discovery.sh"
+
+vpn_install
 
 echo "### Update user: $USER password ###"
 echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
 
-echo "### Start Tailscale with SSH enabled ###"
+vpn_up "$CLUSTER_ID" || exit 4
 
-sudo tailscale up --authkey="$TAILSCALE_AUTH_KEY" --ssh --hostname="$LINUX_MACHINE_NAME" --advertise-exit-node
+VPN_IP=$(vpn_ip) || { echo "VPN came up but reported no address"; exit 4; }
 
-sleep 5
-TAILSCALE_IP=$(tailscale ip -4)
-
-if [[ -n "$TAILSCALE_IP" ]]; then
-  echo ""
-  echo "=========================================="
-  echo "Tailscale IP: $TAILSCALE_IP"
-  echo "To connect: ssh $USER@$TAILSCALE_IP"
-  echo "or connect with: ssh $USER@$LINUX_MACHINE_NAME"
-  echo "=========================================="
-else
-  echo "Failed to start Tailscale"
-  exit 4
-fi
-
-# NFS client — required so pods can mount NFS-backed PersistentVolumes.
-# Without it kubelet's mount fails with "you might need a /sbin/mount.<type> helper program".
-echo "### Install NFS client (nfs-common) ###"
-sudo apt-get update && sudo apt-get install -y nfs-common
+echo ""
+echo "=========================================="
+echo "Cluster ID: $CLUSTER_ID"
+echo "Mesh IP:    $VPN_IP  (iface $VPN_IFACE)"
+echo "Connect:    ssh $USER@$VPN_IP"
+echo "=========================================="
 
 ### Sync configurations from Google Drive ###
 #
@@ -120,8 +131,9 @@ fi
 # would hand you a different kubeconfig. Keep the CA in Drive instead: the first
 # boot generates and uploads it, every later boot restores it before k3s starts.
 # Same CA => a kubeconfig saved once stays valid against every future box; only
-# the server URL changes. Only the CA keypairs + service.key are carried over —
-# the node-specific serving certs are left to regenerate for this box's IP.
+# the server URL changes. It is also what lets the outgoing box drive the
+# incoming box's API during handoff. Only the CA keypairs + service.key are
+# carried over — node-specific serving certs regenerate for this box's IP.
 # GDRIVE_TLS : Drive folder holding the CA (default "k3s-tls")
 K3S_TLS_DIR=/var/lib/rancher/k3s/server/tls
 CA_FILTER=(--include "*-ca.crt" --include "*-ca.key" --include "service.key")
@@ -147,15 +159,16 @@ unset K3S_URL K3S_TOKEN
 
 # Single binary = control-plane + worker + containerd + flannel CNI + local-path storage.
 # --write-kubeconfig-mode 644 so the created user can read kubeconfig without sudo.
-# --tls-san so kubectl works over Tailscale from other machines.
-# --node-ip / --flannel-iface pin cluster traffic to tailscale0, not the public NIC.
+# --tls-san so kubectl works over the mesh from other machines (and from the peer
+# cluster during handoff).
+# --node-ip / --flannel-iface pin cluster traffic to the mesh, not the public NIC.
 curl -sfL https://get.k3s.io | sh -s - \
   --write-kubeconfig-mode 644 \
-  --node-name "$LINUX_MACHINE_NAME" \
-  --node-ip "$TAILSCALE_IP" \
-  --flannel-iface tailscale0 \
-  --tls-san "$LINUX_MACHINE_NAME" \
-  --tls-san "$TAILSCALE_IP"
+  --node-name "$CLUSTER_ID" \
+  --node-ip "$VPN_IP" \
+  --flannel-iface "$VPN_IFACE" \
+  --tls-san "$CLUSTER_ID" \
+  --tls-san "$VPN_IP"
 
 # First boot only in practice: rclone copy skips files Drive already has, so
 # later boots re-upload nothing and the CA stays whatever the first box minted.
@@ -173,11 +186,64 @@ done
 # Make kubeconfig usable by the created login user (kubectl reads ~/.kube/config).
 sudo mkdir -p /home/$LINUX_USERNAME/.kube
 sudo cp /etc/rancher/k3s/k3s.yaml /home/$LINUX_USERNAME/.kube/config
-sudo sed -i "s/127.0.0.1/$TAILSCALE_IP/g" /home/$LINUX_USERNAME/.kube/config
+sudo sed -i "s/127.0.0.1/$VPN_IP/g" /home/$LINUX_USERNAME/.kube/config
 sudo chown -R $LINUX_USERNAME:$LINUX_USERNAME /home/$LINUX_USERNAME/.kube
 sudo ln -sf /usr/local/bin/kubectl /usr/local/bin/k 2>/dev/null || true
 
 echo 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml' >> ~/.bashrc
+
+### Decide this box's role and announce it ###
+#
+# Registration happens only now, once the API actually answers — a peer that
+# finds us in the registry must be able to reach us immediately.
+ROLE=bootstrap
+PRIMARY_IP=""
+SOURCE_ID=""
+
+if [[ -n "$GDRIVE_TOKEN" ]]; then
+  EXPIRES_AT=$((SCRIPT_START + JOB_TTL_SECONDS))
+
+  # Read the outgoing primary BEFORE we overwrite the record: its id is the
+  # archive path the database restores from. Empty only on the very first boot
+  # ever — anything else means there is data in R2 and initdb would be data loss.
+  SOURCE_ID=$(state_primary | jq -r '.id // empty')
+
+  read -r ROLE PRIMARY_IP <<<"$(decide_role "$CLUSTER_ID")"
+  # TTL is what's LEFT, not the full job length — provisioning already burned
+  # a few minutes and peers pick a successor by remaining life.
+  state_register "$CLUSTER_ID" "$VPN_IP" "$((EXPIRES_AT - $(date +%s)))"
+
+  if [[ "$ROLE" == "bootstrap" ]]; then
+    # Nobody live to replicate from: this box owns the data and claims primary.
+    state_set_primary "$CLUSTER_ID" "$VPN_IP"
+    echo "### Role: BOOTSTRAP — this cluster is the primary ###"
+  else
+    echo "### Role: STANDBY of $PRIMARY_IP — replicating, will take over at handoff ###"
+  fi
+fi
+
+# Everything downstream (init.sh from Drive, handoff.sh from the timer) reads
+# this instead of re-deriving the role.
+sudo tee /opt/cluster.env > /dev/null <<ENV
+CLUSTER_ID=$CLUSTER_ID
+VPN_PROVIDER=${VPN_PROVIDER:-tailscale}
+VPN_IFACE=$VPN_IFACE
+VPN_IP=$VPN_IP
+ROLE=$ROLE
+PRIMARY_IP=$PRIMARY_IP
+SOURCE_ID=$SOURCE_ID
+STARTED_AT=$SCRIPT_START
+EXPIRES_AT=$((SCRIPT_START + JOB_TTL_SECONDS))
+CONFIG_DEST=${CONFIG_DEST:-/opt/configs}
+GDRIVE_STATE=${GDRIVE_STATE:-state}
+KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+ENV
+
+# Keep the helper scripts on the box: handoff.sh runs hours after the CI
+# checkout is gone.
+sudo mkdir -p /opt/runner-scripts
+sudo cp "$SCRIPT_DIR"/scripts/*.sh /opt/runner-scripts/
+sudo chmod +x /opt/runner-scripts/*.sh
 
 ### Run the one-shot bootstrap from Drive ###
 #
@@ -185,7 +251,7 @@ echo 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml' >> ~/.bashrc
 # built from CI credentials, third-party operator installs. It runs ONCE per box
 # (each VM is a brand-new empty cluster, so "once" is per boot, not ever), unlike
 # the *.yaml above which the 5-min cron keeps reconciling.
-# Needs from the CI job: GHCR_USER, GHCR_PAT, DOPPLER_TOKEN.
+# Needs from the CI job: GHCR_USER, GHCR_PAT, DOPPLER_TOKEN, R2_*.
 if [[ -f "$CONFIG_DEST/init.sh" ]]; then
   # init.sh reads the Doppler token via the CLI, so install and seed it first.
   if [[ -n "$DOPPLER_TOKEN" ]]; then
@@ -196,24 +262,72 @@ if [[ -f "$CONFIG_DEST/init.sh" ]]; then
     echo "WARNING: DOPPLER_TOKEN unset — init.sh will create an empty doppler-token-secret"
   fi
 
-  echo "### Run init.sh from $CONFIG_DEST ###"
+  echo "### Run init.sh from $CONFIG_DEST (role: $ROLE) ###"
   # cd first: init.sh applies relative paths like ./apps/app-accounts/dev
   ( cd "$CONFIG_DEST" && sudo env \
       KUBECONFIG=/etc/rancher/k3s/k3s.yaml \
+      CLUSTER_ID="$CLUSTER_ID" \
+      VPN_IP="$VPN_IP" \
+      ROLE="$ROLE" \
+      PRIMARY_IP="$PRIMARY_IP" \
+      SOURCE_ID="$SOURCE_ID" \
+      GDRIVE_STATE="${GDRIVE_STATE:-state}" \
       GHCR_USER="$GHCR_USER" \
       GHCR_PAT="$GHCR_PAT" \
       DOPPLER_TOKEN="$DOPPLER_TOKEN" \
+      R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+      R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+      R2_BUCKET="$R2_BUCKET" \
+      R2_ENDPOINT="$R2_ENDPOINT" \
       bash init.sh ) 2>&1 | tee /var/log/init-sh.log
   echo "init.sh finished (exit ${PIPESTATUS[0]}) — full log at /var/log/init-sh.log"
 else
   echo "### No init.sh in $CONFIG_DEST — skipping bootstrap ###"
 fi
 
+### Schedule the handoff before GitHub kills this VM ###
+#
+# A systemd timer rather than cron: cron's finest granularity is a minute and we
+# want a one-shot at an exact wall-clock moment, computed from the job deadline.
+if [[ -n "$GDRIVE_TOKEN" ]]; then
+  HANDOFF_AT=$((SCRIPT_START + JOB_TTL_SECONDS - HANDOFF_LEAD_SECONDS))
+  HANDOFF_STAMP=$(date -u -d "@$HANDOFF_AT" '+%Y-%m-%d %H:%M:%S UTC')
+
+  sudo tee /etc/systemd/system/handoff.service > /dev/null <<UNIT
+[Unit]
+Description=Drain this cluster and hand the primary role to a live peer
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/cluster.env
+ExecStart=/opt/runner-scripts/handoff.sh
+StandardOutput=append:/var/log/handoff.log
+StandardError=append:/var/log/handoff.log
+UNIT
+
+  sudo tee /etc/systemd/system/handoff.timer > /dev/null <<UNIT
+[Unit]
+Description=Fire the handoff 15 minutes before GitHub kills this runner
+
+[Timer]
+OnCalendar=$HANDOFF_STAMP
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now handoff.timer
+  echo "### Handoff scheduled for $HANDOFF_STAMP (log: /var/log/handoff.log) ###"
+fi
+
 echo ""
 echo "=========================================="
-echo "Standalone cluster ready: $LINUX_MACHINE_NAME"
+echo "Cluster ready: $CLUSTER_ID  (role: $ROLE)"
 echo "On this box:        sudo k3s kubectl get nodes"
 echo "As $LINUX_USERNAME:  kubectl get nodes"
-echo "Remote kubeconfig:  /home/$LINUX_USERNAME/.kube/config (API at https://$TAILSCALE_IP:6443)"
+echo "Remote kubeconfig:  /home/$LINUX_USERNAME/.kube/config (API at https://$VPN_IP:6443)"
 echo "Configs:            ${CONFIG_DEST:-<no gdrive sync>} (top-level *.yaml auto-applied by k3s)"
+echo "Role/state:         /opt/cluster.env"
 echo "=========================================="
