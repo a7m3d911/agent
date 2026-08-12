@@ -59,7 +59,21 @@ fi
 
 ### 1. Pick a successor ###
 
-successor=$(state_successor "$CLUSTER_ID")
+# Walk candidates newest-first until one actually answers. A hard-killed VM never
+# deregisters, so the registry always contains corpses — taking the top entry on
+# faith would hand the primary role to a box that no longer exists.
+successor=""
+while read -r candidate; do
+  [[ -z "$candidate" ]] && continue
+  cand_ip=$(jq -r .vpn_ip <<<"$candidate")
+  if cluster_reachable "$cand_ip"; then
+    successor="$candidate"
+    break
+  fi
+  log "Skipping $(jq -r .id <<<"$candidate") — registered but unreachable (dead VM?)"
+  state_deregister "$(jq -r .id <<<"$candidate")"
+done < <(state_live_members "$CLUSTER_ID")
+
 if [[ -z "$successor" ]]; then
   # Draining now would take the site down with nothing to take over. Better to
   # keep serving until GitHub kills us: the WAL is already archived to R2, so the
@@ -73,8 +87,11 @@ succ_ip=$(jq -r .vpn_ip <<<"$successor")
 kc=$(peer_kubeconfig "$succ_ip")
 log "Successor: $succ_id ($succ_ip)"
 
-if ! kpeer "$kc" get --raw /livez >/dev/null 2>&1; then
-  log "ALERT: successor $succ_id is registered but its API is unreachable. Aborting handoff."
+# Reachable is not the same as ready to take over: a peer whose database is still
+# restoring would accept the promotion and serve nothing.
+if ! kpeer "$kc" -n "$DB_NS" get cluster "$PG_CLUSTER" \
+     -o jsonpath='{.status.readyInstances}' 2>/dev/null | grep -q '[1-9]'; then
+  log "ALERT: successor $succ_id has no ready Postgres instance. Aborting handoff."
   exit 1
 fi
 
