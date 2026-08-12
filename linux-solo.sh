@@ -214,13 +214,16 @@ if [[ -n "$GDRIVE_TOKEN" ]]; then
   state_register "$CLUSTER_ID" "$VPN_IP" "$((EXPIRES_AT - $(date +%s)))"
 
   if [[ "$ROLE" == "bootstrap" ]]; then
-    # Nobody live to replicate from: this box owns the data and claims primary.
-    state_set_primary "$CLUSTER_ID" "$VPN_IP"
-    echo "### Role: BOOTSTRAP — this cluster is the primary ###"
+    echo "### Role: BOOTSTRAP — will claim primary once the database is up ###"
   else
     echo "### Role: STANDBY of $PRIMARY_IP — replicating, will take over at handoff ###"
   fi
 fi
+
+# NOTE: the primary claim happens AFTER init.sh, not here. Claiming up front
+# means a box that dies during provisioning still names itself in primary.json,
+# and the next box then tries to restore from an R2 archive that box never
+# wrote — an unrecoverable wait for a backup that does not exist.
 
 # Everything downstream (init.sh from Drive, handoff.sh from the timer) reads
 # this instead of re-deriving the role.
@@ -280,7 +283,19 @@ if [[ -f "$CONFIG_DEST/init.sh" ]]; then
       R2_BUCKET="$R2_BUCKET" \
       R2_ENDPOINT="$R2_ENDPOINT" \
       bash init.sh ) 2>&1 | tee /var/log/init-sh.log
-  echo "init.sh finished (exit ${PIPESTATUS[0]}) — full log at /var/log/init-sh.log"
+  INIT_RC=${PIPESTATUS[0]}
+  echo "init.sh finished (exit $INIT_RC) — full log at /var/log/init-sh.log"
+
+  # Only now, with a database actually serving, is it safe to tell the next box
+  # to restore from this one's archive.
+  if [[ "$ROLE" == "bootstrap" && -n "$GDRIVE_TOKEN" ]]; then
+    if [[ $INIT_RC -eq 0 ]]; then
+      state_set_primary "$CLUSTER_ID" "$VPN_IP"
+      echo "### Claimed primary: $CLUSTER_ID ###"
+    else
+      echo "### init.sh failed — NOT claiming primary, leaving the record untouched ###"
+    fi
+  fi
 else
   echo "### No init.sh in $CONFIG_DEST — skipping bootstrap ###"
 fi
