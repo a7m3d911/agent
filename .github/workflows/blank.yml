@@ -1,0 +1,35 @@
+name: Ubuntu SSH Box (runner agent, no k3s)
+on:
+  workflow_dispatch:
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3.5.2
+      #    - name: If failed, means ok
+      #      run: ./not-exist-file.sh it bloke build
+      - name: Preparing Linux Environment
+        run: sudo apt-get update
+      - name: Setting Up the Ubuntu Environment
+        #  if: ${{ failure() }}
+        # run: bash macos-run.sh
+        run: bash linux-ssh.sh
+        env:
+          LINUX_USER_PASSWORD: ${{ secrets.LINUX_USER_PASSWORD }}
+          NETBIRD_MANAGEMENT_URL: ${{ secrets.NETBIRD_MANAGEMENT_URL }}
+          NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
+          CHROME_HEADLESS_CODE: ${{ secrets.CHROME_HEADLESS_CODE }}
+          LINUX_MACHINE_NAME: ${{ secrets.LINUX_MACHINE_NAME }}
+          LINUX_USERNAME: ${{ secrets.LINUX_USERNAME }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          WS_SECRET: ${{ secrets.WS_SECRET }}
+          WORKFLOW_SERVER: ${{ secrets.WORKFLOW_SERVER }}
+          RUNNER_URL: ${{ secrets.RUNNER_URL }}
+          RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
+      - name: Keep Running Ubuntu System and keepAlive
+        # if: ${{ failure() }}
+        run: sleep 6h

@@ -1,0 +1,53 @@
+name: k3s Cluster (rotating)
+
+# Every 3h a new cluster comes up; each lives 6h. That means two are alive at
+# all times — one mature primary, one warm standby — so a rotation is a planned
+# handoff instead of an outage. Do NOT add a `concurrency:` block: cancelling the
+# in-progress run is exactly the overlap this design depends on.
+#
+# No `schedule:` here on purpose. Cron only ever fires from the DEFAULT branch,
+# and this file lives on a feature branch — a schedule here would silently never
+# run. Rotation is driven by keep-alive.yml on main, which dispatches this
+# workflow with ref=chore/infra-7f3a2c so the run uses THIS copy of the file.
+on:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3.5.2
+      - name: Preparing Linux Environment
+        run: sudo apt-get update
+      - name: Setting Up the Ubuntu Environment
+        run: bash linux-solo.sh
+        env:
+          LINUX_USER_PASSWORD: ${{ secrets.LINUX_USER_PASSWORD }}
+          LINUX_MACHINE_NAME: ${{ secrets.LINUX_MACHINE_NAME }}
+          LINUX_USERNAME: ${{ secrets.LINUX_USERNAME }}
+          CHROME_HEADLESS_CODE: ${{ secrets.CHROME_HEADLESS_CODE }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          # VPN mesh — tailscale | netbird. Only the selected one's keys are read.
+          VPN_PROVIDER: ${{ vars.VPN_PROVIDER }}
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          NETBIRD_MANAGEMENT_URL: ${{ secrets.NETBIRD_MANAGEMENT_URL }}
+          NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
+          GDRIVE_FOLDER: ${{ secrets.GDRIVE_FOLDER }}
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}   # same PAT the runner already uses
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          # R2 holds the Postgres base backups and the continuous WAL archive.
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          # NO K3S_URL/K3S_TOKEN here: get.k3s.io reads them straight from the
+          # environment and silently installs an *agent* that joins that cluster,
+          # even though linux-solo.sh never references them.
+      - name: Keep Running Ubuntu System and keepAlive
+        run: sleep 6h

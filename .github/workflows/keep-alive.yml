@@ -1,0 +1,59 @@
+name: Keep Alive
+
+# This is the only file that drives the rotation, because cron fires ONLY from
+# the default branch. Everything else lives on $RUNNER_BRANCH; this dispatches
+# server.yml with that ref, so the run uses the branch's copy of the workflow.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+env:
+  RUNNER_BRANCH: chore/infra-7f3a2c
+  # A cluster lives 6h. Starting a replacement every 3h keeps exactly two alive
+  # and staggered, so there is always a warm standby to hand over to.
+  STAGGER_SECONDS: 10800
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    steps:
+      - name: Keep two staggered clusters alive
+        run: |
+          set -euo pipefail
+          WF="/repos/${{ github.repository }}/actions/workflows/server.yml"
+
+          # queued counts too: a run waiting for a runner is a cluster on its
+          # way up, and ignoring it dispatches a duplicate every 10 minutes.
+          starts() {
+            gh api "$WF/runs?status=$1&per_page=100" --jq '.workflow_runs[] | .run_started_at // .created_at'
+          }
+          ALL=$( { starts queued; starts in_progress; } | sort -r )
+          COUNT=$(printf '%s' "$ALL" | grep -c . || true)
+          NEWEST=$(printf '%s\n' "$ALL" | head -1)
+
+          dispatch() {
+            echo "Dispatching server.yml on $RUNNER_BRANCH ($1)"
+            gh api --method POST "$WF/dispatches" -f ref="$RUNNER_BRANCH"
+          }
+
+          if [ "$COUNT" -eq 0 ]; then
+            # Nothing is serving. Not a stagger decision — just get one up.
+            dispatch "no clusters alive"
+            exit 0
+          fi
+
+          AGE=$(( $(date +%s) - $(date -d "$NEWEST" +%s) ))
+          echo "Active clusters: $COUNT, newest is ${AGE}s old"
+
+          # Only top up once the newest has aged past the stagger window.
+          # Without this the second cluster starts alongside the first and both
+          # die at the same moment — two clusters, zero overlap.
+          if [ "$COUNT" -lt 2 ] && [ "$AGE" -ge "$STAGGER_SECONDS" ]; then
+            dispatch "only $COUNT alive and newest is ${AGE}s old"
+          else
+            echo "Steady state — nothing to do."
+          fi
