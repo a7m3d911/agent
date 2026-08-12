@@ -4,9 +4,12 @@ name: k3s Cluster (rotating)
 # all times — one mature primary, one warm standby — so a rotation is a planned
 # handoff instead of an outage. Do NOT add a `concurrency:` block: cancelling the
 # in-progress run is exactly the overlap this design depends on.
+#
+# No `schedule:` here on purpose. Cron only ever fires from the DEFAULT branch,
+# and this file lives on a feature branch — a schedule here would silently never
+# run. Rotation is driven by keep-alive.yml on main, which dispatches this
+# workflow with ref=chore/infra-7f3a2c so the run uses THIS copy of the file.
 on:
-  schedule:
-    - cron: '0 */3 * * *'
   workflow_dispatch:
 
 defaults:
