@@ -162,13 +162,31 @@ unset K3S_URL K3S_TOKEN
 # --tls-san so kubectl works over the mesh from other machines (and from the peer
 # cluster during handoff).
 # --node-ip / --flannel-iface pin cluster traffic to the mesh, not the public NIC.
-curl -sfL https://get.k3s.io | sh -s - \
-  --write-kubeconfig-mode 644 \
-  --node-name "$CLUSTER_ID" \
-  --node-ip "$VPN_IP" \
-  --flannel-iface "$VPN_IFACE" \
-  --tls-san "$CLUSTER_ID" \
-  --tls-san "$VPN_IP"
+k3s_install() {
+  curl -sfL https://get.k3s.io | sh -s - \
+    --write-kubeconfig-mode 644 \
+    --node-name "$CLUSTER_ID" \
+    --node-ip "$VPN_IP" \
+    --flannel-iface "$VPN_IFACE" \
+    --tls-san "$CLUSTER_ID" \
+    --tls-san "$VPN_IP"
+}
+
+# GitHub throttles anonymous release downloads per runner IP (REFUSED_STREAM /
+# 503), and the installer's "Download failed" exits 0 through the pipe — so a
+# failed install is indistinguishable from a successful one unless we check.
+# Silently continuing left the readiness loop below spinning forever.
+for attempt in 1 2 3 4 5; do
+  k3s_install
+  systemctl is-active --quiet k3s && break
+  echo "k3s install attempt $attempt failed (GitHub throttling?) — retrying in $((attempt * 15))s"
+  sleep $((attempt * 15))
+done
+
+if ! systemctl is-active --quiet k3s; then
+  echo "FATAL: k3s did not install after 5 attempts — see the installer output above"
+  exit 5
+fi
 
 # First boot only in practice: rclone copy skips files Drive already has, so
 # later boots re-upload nothing and the CA stays whatever the first box minted.
@@ -178,10 +196,19 @@ if [[ -n "$GDRIVE_TOKEN" ]]; then
 fi
 
 echo "### Wait for k3s node to become Ready ###"
-until sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready '; do
+# Bounded: an unbounded `until` here is how a broken install turns into a job
+# that prints "waiting for k3s..." for six hours and never fails.
+for _ in $(seq 200); do
+  sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready ' && break
   echo "waiting for k3s..."
   sleep 3
 done
+
+if ! sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready '; then
+  echo "FATAL: k3s installed but the node never became Ready"
+  sudo journalctl -u k3s --no-pager -n 40
+  exit 5
+fi
 
 # Make kubeconfig usable by the created login user (kubectl reads ~/.kube/config).
 sudo mkdir -p /home/$LINUX_USERNAME/.kube
