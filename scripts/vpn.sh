@@ -6,7 +6,7 @@
 #
 # Provides: $VPN_IFACE, vpn_install, vpn_up <hostname>, vpn_ip
 
-VPN_PROVIDER="${VPN_PROVIDER:-tailscale}"
+VPN_PROVIDER="${VPN_PROVIDER:-netbird}"
 
 case "$VPN_PROVIDER" in
   tailscale) VPN_IFACE=tailscale0 ;;
