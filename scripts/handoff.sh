@@ -62,17 +62,38 @@ fi
 # Walk candidates newest-first until one actually answers. A hard-killed VM never
 # deregisters, so the registry always contains corpses — taking the top entry on
 # faith would hand the primary role to a box that no longer exists.
-successor=""
-while read -r candidate; do
-  [[ -z "$candidate" ]] && continue
-  cand_ip=$(jq -r .vpn_ip <<<"$candidate")
-  if cluster_reachable "$cand_ip"; then
-    successor="$candidate"
-    break
-  fi
-  log "Skipping $(jq -r .id <<<"$candidate") — registered but unreachable (dead VM?)"
-  state_deregister "$(jq -r .id <<<"$candidate")"
-done < <(state_live_members "$CLUSTER_ID")
+find_successor() {
+  local candidate cand_ip
+  while read -r candidate; do
+    [[ -z "$candidate" ]] && continue
+    cand_ip=$(jq -r .vpn_ip <<<"$candidate")
+    if cluster_reachable "$cand_ip"; then
+      echo "$candidate"
+      return 0
+    fi
+    log "Skipping $(jq -r .id <<<"$candidate") — registered but unreachable (dead VM?)"
+    state_deregister "$(jq -r .id <<<"$candidate")"
+  done < <(state_live_members "$CLUSTER_ID")
+  return 1
+}
+
+successor=$(find_successor) || successor=""
+
+# Backstop for a broken chain: if the spawn timer failed 3h ago there is no peer
+# at all. Starting one now is late — it may not finish provisioning before this
+# VM is killed — but it is the difference between a gap and an outage that lasts
+# until someone notices.
+if [[ -z "$successor" && -x /opt/runner-scripts/spawn-successor.sh ]]; then
+  log "No peer found — chain looks broken. Dispatching one now."
+  set -a; [[ -f /etc/spawn.env ]] && source /etc/spawn.env; set +a
+  /opt/runner-scripts/spawn-successor.sh || log "WARN: emergency dispatch failed"
+
+  for _ in $(seq 40); do   # ~10 min: provisioning plus the restore from R2
+    sleep 15
+    successor=$(find_successor) && break || successor=""
+  done
+  [[ -n "$successor" ]] && log "Emergency successor came up: $(jq -r .id <<<"$successor")"
+fi
 
 if [[ -z "$successor" ]]; then
   # Draining now would take the site down with nothing to take over. Better to
@@ -106,8 +127,20 @@ kubectl -n cf rollout status deploy/cloudflared-deployment --timeout=60s 2>/dev/
 
 ### 3. Stop writing ###
 
+# Demote ourselves FIRST so the storage sidecars stop uploading before the
+# successor is promoted. Two clusters pushing one R2 prefix corrupt each other.
+log "Demoting local storage sidecars to standby..."
+for ns in app-9router; do
+  kubectl -n "$ns" create configmap cluster-role --from-literal=ROLE=standby \
+    --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1 || true
+done
+
 log "Scaling down local app workloads..."
+# The 9router pod's sidecar does a final R2 push on SIGTERM, so this scale-down
+# is also what flushes its data — hence the wait before promoting anyone.
+kubectl -n app-9router scale deploy 9router --replicas=0 2>/dev/null || true
 kubectl -n apps scale deploy --all --replicas=0 2>/dev/null || true
+kubectl -n app-9router wait --for=delete pod -l app=9router --timeout=90s 2>/dev/null || true
 sleep 5
 
 ### 4. Flush everything the standby still needs ###
@@ -160,6 +193,20 @@ redis_pod_ip=$(kpeer "$kc" -n "$DB_NS" get pod -l app=redis -o jsonpath='{.items
   -p "{\"subsets\":[{\"addresses\":[{\"ip\":\"$redis_pod_ip\"}],\"ports\":[{\"port\":6379,\"name\":\"redis\"}]}]}"
 
 ### 8. Publish the new primary and stand down ###
+
+### 8. Let the successor's storage sidecars start writing ###
+#
+# Last, and only after our own were demoted and flushed: the R2 prefix has one
+# writer at a time. Restarting 9router there also makes it re-pull the data we
+# just pushed, so it picks up everything written right up to the drain.
+log "Promoting storage sidecars on $succ_id..."
+for ns in app-9router; do
+  kpeer "$kc" -n "$ns" create configmap cluster-role --from-literal=ROLE=primary \
+    --dry-run=client -o yaml 2>/dev/null | kpeer "$kc" apply -f - >/dev/null 2>&1 || true
+done
+kpeer "$kc" -n app-9router rollout restart deploy/9router 2>/dev/null || true
+
+### 9. Publish the new primary and stand down ###
 
 state_set_primary "$succ_id" "$succ_ip"
 state_deregister "$CLUSTER_ID"

@@ -26,6 +26,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # which is the whole reason a *planned* handoff is possible instead of a crash.
 JOB_TTL_SECONDS="${JOB_TTL_SECONDS:-21600}"
 HANDOFF_LEAD_SECONDS="${HANDOFF_LEAD_SECONDS:-900}"   # start handing over 15m before the kill
+# Half the job length: the successor is then exactly 3h behind, so the pair stays
+# staggered and there is always one mature cluster and one warm one.
+SPAWN_AFTER_SECONDS="${SPAWN_AFTER_SECONDS:-10800}"
 
 ### Identity — must be unique, two of these are alive at once ###
 
@@ -267,7 +270,16 @@ EXPIRES_AT=$((SCRIPT_START + JOB_TTL_SECONDS))
 CONFIG_DEST=${CONFIG_DEST:-/opt/configs}
 GDRIVE_STATE=${GDRIVE_STATE:-state}
 KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+GITHUB_REPOSITORY=${GITHUB_REPOSITORY:-}
+GITHUB_REF_NAME=${GITHUB_REF_NAME:-}
 ENV
+
+# The dispatch token, kept out of cluster.env because that file is world-readable
+# and this one is not.
+sudo tee /etc/spawn.env > /dev/null <<ENV
+SPAWN_TOKEN=$GH_TOKEN
+ENV
+sudo chmod 600 /etc/spawn.env
 
 # Keep the helper scripts on the box: handoff.sh runs hours after the CI
 # checkout is gone.
@@ -362,6 +374,48 @@ UNIT
   sudo systemctl daemon-reload
   sudo systemctl enable --now handoff.timer
   echo "### Handoff scheduled for $HANDOFF_STAMP (log: /var/log/handoff.log) ###"
+fi
+
+### Schedule the successor ###
+#
+# The rotation is a chain: this box starts the next one partway through its own
+# life. Nothing polls and nothing is on a cron, so with no cluster running there
+# is nothing to start anything — a cold start is manual by construction, which
+# is the intent.
+if [[ -n "$GITHUB_REPOSITORY" ]]; then
+  SPAWN_AT=$((SCRIPT_START + SPAWN_AFTER_SECONDS))
+  SPAWN_STAMP=$(date -u -d "@$SPAWN_AT" '+%Y-%m-%d %H:%M:%S UTC')
+
+  sudo tee /etc/systemd/system/spawn.service > /dev/null <<UNIT
+[Unit]
+Description=Dispatch the next cluster in the rotation
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/cluster.env
+EnvironmentFile=/etc/spawn.env
+ExecStart=/opt/runner-scripts/spawn-successor.sh
+StandardOutput=append:/var/log/spawn.log
+StandardError=append:/var/log/spawn.log
+UNIT
+
+  sudo tee /etc/systemd/system/spawn.timer > /dev/null <<UNIT
+[Unit]
+Description=Start the successor 3h into this cluster's life
+
+[Timer]
+OnCalendar=$SPAWN_STAMP
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now spawn.timer
+  echo "### Successor scheduled for $SPAWN_STAMP (log: /var/log/spawn.log) ###"
+else
+  echo "### GITHUB_REPOSITORY unset — no successor will be spawned ###"
 fi
 
 echo ""
