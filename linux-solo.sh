@@ -49,10 +49,14 @@ if [[ -z "$LINUX_USER_PASSWORD" ]]; then
   exit 3
 fi
 
-echo "### Install base tooling (jq, nfs-common) ###"
+echo "### Install base tooling (jq, nfs-common, rclone) ###"
 # jq: discovery.sh parses the Drive registry with it.
 # nfs-common: kubelet needs it to mount NFS-backed PVs ("no /sbin/mount.<type>").
-sudo apt-get update && sudo apt-get install -y jq nfs-common
+# rclone: from apt, NOT rclone.org's curl|bash installer — that download gets
+# reset from runner egress often enough to matter, and when it does every Drive
+# step below turns into a no-op (no configs, no CA restore, fresh CA, dead
+# kubeconfigs). Apt's build is years behind upstream and entirely fine for copy.
+sudo apt-get update && sudo apt-get install -y jq nfs-common rclone
 
 echo "### Bring up the VPN mesh (provider: ${VPN_PROVIDER:-tailscale}) ###"
 
@@ -98,8 +102,9 @@ if [[ -n "$GDRIVE_TOKEN" ]]; then
   GDRIVE_FOLDER="${GDRIVE_FOLDER:-configs}"
   CONFIG_DEST="${CONFIG_DEST:-/opt/configs}"
 
-  echo "### Install rclone ###"
-  curl -fsSL https://rclone.org/install.sh | sudo bash
+  # Stop here rather than three steps later: without rclone the config sync and
+  # the CA restore both quietly do nothing, and the CA one corrupts the pin.
+  command -v rclone >/dev/null || { echo "FATAL: rclone missing — apt-get install failed"; exit 6; }
 
   echo "### Write rclone config (root — manifests dir is root-owned) ###"
   sudo mkdir -p /root/.config/rclone
