@@ -35,7 +35,7 @@ vpn_up() {
         echo "NETBIRD_MANAGEMENT_URL / NETBIRD_SETUP_KEY unset" >&2; return 2; }
       sudo netbird up --management-url "$NETBIRD_MANAGEMENT_URL" \
         --setup-key "$NETBIRD_SETUP_KEY" --hostname "$hostname" \
-        --allow-server-ssh --enable-ssh-root
+        --allow-server-ssh --enable-ssh-root --disable-ssh-auth
       ;;
   esac
 }

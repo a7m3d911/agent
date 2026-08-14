@@ -141,12 +141,22 @@ fi
 K3S_TLS_DIR=/var/lib/rancher/k3s/server/tls
 CA_FILTER=(--include "*-ca.crt" --include "*-ca.key" --include "service.key")
 
+CA_RESTORED=0
+
 if [[ -n "$GDRIVE_TOKEN" ]]; then
   GDRIVE_TLS="${GDRIVE_TLS:-k3s-tls}"
   echo "### Restore cluster CA: gdrive:$GDRIVE_TLS -> $K3S_TLS_DIR ###"
   sudo mkdir -p "$K3S_TLS_DIR"
-  sudo rclone copy "gdrive:$GDRIVE_TLS" "$K3S_TLS_DIR" "${CA_FILTER[@]}"
+  # Abort rather than continue: a transient Drive error here is indistinguishable
+  # from "first boot ever", and guessing wrong means minting a fresh CA and
+  # publishing it over the good one — which invalidates every kubeconfig ever
+  # saved, with no way back.
+  if ! sudo rclone copy "gdrive:$GDRIVE_TLS" "$K3S_TLS_DIR" "${CA_FILTER[@]}"; then
+    echo "FATAL: could not read gdrive:$GDRIVE_TLS — refusing to mint a new CA"
+    exit 6
+  fi
   if [[ -f "$K3S_TLS_DIR/server-ca.crt" ]]; then
+    CA_RESTORED=1
     echo "Reusing existing CA — your saved kubeconfig still works"
   else
     echo "No CA in Drive yet — k3s will generate one and we upload it below"
@@ -191,11 +201,15 @@ if ! systemctl is-active --quiet k3s; then
   exit 5
 fi
 
-# First boot only in practice: rclone copy skips files Drive already has, so
-# later boots re-upload nothing and the CA stays whatever the first box minted.
-if [[ -n "$GDRIVE_TOKEN" ]]; then
-  echo "### Back up cluster CA -> gdrive:$GDRIVE_TLS ###"
+# Publish ONLY when this box actually minted the CA — i.e. the first boot ever.
+# `rclone copy` does not protect us here: it skips on matching size AND modtime,
+# and two different k3s CAs are byte-identical in size (same EC P-256 template),
+# so a fresh one always looks "newer" and silently overwrites the pinned CA.
+if [[ -n "$GDRIVE_TOKEN" && $CA_RESTORED -eq 0 ]]; then
+  echo "### First CA ever — publishing to gdrive:$GDRIVE_TLS ###"
   sudo rclone copy "$K3S_TLS_DIR" "gdrive:$GDRIVE_TLS" "${CA_FILTER[@]}"
+elif [[ -n "$GDRIVE_TOKEN" ]]; then
+  echo "### CA came from Drive — not re-uploading ###"
 fi
 
 echo "### Wait for k3s node to become Ready ###"
