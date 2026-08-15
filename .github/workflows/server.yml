@@ -36,6 +36,10 @@ jobs:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
           NETBIRD_MANAGEMENT_URL: ${{ secrets.NETBIRD_MANAGEMENT_URL }}
           NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
+          # Rewrites the zone's A records to whichever box is primary. Peer
+          # FQDNs carry the run number, so they can't be the stable name.
+          NETBIRD_TOKEN: ${{ secrets.NETBIRD_TOKEN }}
+          NETBIRD_DNS_ZONE: ${{ vars.NETBIRD_DNS_ZONE }}
           GDRIVE_FOLDER: ${{ secrets.GDRIVE_FOLDER }}
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
           GHCR_USER: ${{ secrets.GHCR_USER }}

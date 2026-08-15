@@ -62,6 +62,7 @@ echo "### Bring up the VPN mesh (provider: ${VPN_PROVIDER:-tailscale}) ###"
 
 source "$SCRIPT_DIR/scripts/vpn.sh"
 source "$SCRIPT_DIR/scripts/discovery.sh"
+source "$SCRIPT_DIR/scripts/dns.sh"
 
 vpn_install
 
@@ -288,15 +289,18 @@ STARTED_AT=$SCRIPT_START
 EXPIRES_AT=$((SCRIPT_START + JOB_TTL_SECONDS))
 CONFIG_DEST=${CONFIG_DEST:-/opt/configs}
 GDRIVE_STATE=${GDRIVE_STATE:-state}
+NETBIRD_API=${NETBIRD_API:-https://netbird.marbit.dev}
+NETBIRD_DNS_ZONE=${NETBIRD_DNS_ZONE:-}
 KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 GITHUB_REPOSITORY=${GITHUB_REPOSITORY:-}
 GITHUB_REF_NAME=${GITHUB_REF_NAME:-}
 ENV
 
-# The dispatch token, kept out of cluster.env because that file is world-readable
-# and this one is not.
+# Tokens, kept out of cluster.env because that file is world-readable and this
+# one is not. Read by spawn.service and handoff.service.
 sudo tee /etc/spawn.env > /dev/null <<ENV
 SPAWN_TOKEN=$GH_TOKEN
+NETBIRD_TOKEN=$NETBIRD_TOKEN
 ENV
 sudo chmod 600 /etc/spawn.env
 
@@ -350,6 +354,9 @@ if [[ -f "$CONFIG_DEST/init.sh" ]]; then
     if [[ $INIT_RC -eq 0 ]]; then
       state_set_primary "$CLUSTER_ID" "$VPN_IP"
       echo "### Claimed primary: $CLUSTER_ID ###"
+      # Same condition as the claim on purpose: DNS must never point at a box
+      # that failed to bring a database up.
+      dns_point "$VPN_IP"
     else
       echo "### init.sh failed — NOT claiming primary, leaving the record untouched ###"
     fi
@@ -373,6 +380,7 @@ Description=Drain this cluster and hand the primary role to a live peer
 [Service]
 Type=oneshot
 EnvironmentFile=/opt/cluster.env
+EnvironmentFile=/etc/spawn.env
 ExecStart=/opt/runner-scripts/handoff.sh
 StandardOutput=append:/var/log/handoff.log
 StandardError=append:/var/log/handoff.log

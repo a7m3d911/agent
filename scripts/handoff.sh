@@ -12,6 +12,7 @@
 set -o pipefail
 
 source /opt/runner-scripts/discovery.sh
+source /opt/runner-scripts/dns.sh
 
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 DB_NS="${DB_NS:-db}"
@@ -209,5 +210,8 @@ kpeer "$kc" -n app-9router rollout restart deploy/9router 2>/dev/null || true
 ### 9. Publish the new primary and stand down ###
 
 state_set_primary "$succ_id" "$succ_ip"
+# After the promote, not before: until step 6 the successor is a read-only
+# replica, and pointing the zone at it early serves reads that cannot write.
+dns_point "$succ_ip"
 state_deregister "$CLUSTER_ID"
 log "=== handoff complete: $succ_id is primary ==="
