@@ -15,6 +15,9 @@
 # a cluster with no DNS wiring should still come up.
 
 NETBIRD_API="${NETBIRD_API:-https://netbird.marbit.dev}"
+# The marbit.group zone. Defaulted so only the token has to be configured —
+# override for a different zone.
+NETBIRD_DNS_ZONE="${NETBIRD_DNS_ZONE:-d9eegq9kepic73b8cu3g}"
 
 # dns_point <ip> — repoint every A record in the zone at <ip>.
 dns_point() {
