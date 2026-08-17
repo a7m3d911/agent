@@ -24,7 +24,7 @@ jobs:
       - name: Preparing Linux Environment
         run: sudo apt-get update
       - name: Setting Up the Ubuntu Environment
-        run: bash linux-solo.sh
+        run: bash linux-server.sh
         env:
           LINUX_USER_PASSWORD: ${{ secrets.LINUX_USER_PASSWORD }}
           LINUX_MACHINE_NAME: ${{ secrets.LINUX_MACHINE_NAME }}
@@ -50,6 +50,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          REPO: ${{ secrets.REPO }}
           # NO K3S_URL/K3S_TOKEN here: get.k3s.io reads them straight from the
           # environment and silently installs an *agent* that joins that cluster,
           # even though linux-solo.sh never references them.
