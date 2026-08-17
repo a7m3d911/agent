@@ -24,4 +24,4 @@ else
 fi
 
 cd "$DIR"
-exec ./server/init.sh
+exec ./dev-server/init.sh
