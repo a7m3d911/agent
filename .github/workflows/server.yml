@@ -11,6 +11,21 @@ name: k3s Cluster (rotating)
 # workflow with ref=chore/infra-7f3a2c so the run uses THIS copy of the file.
 on:
   workflow_dispatch:
+    inputs:
+      handoff_mode:
+        description: 'How the site survives a rotation (see scripts/handoff.sh)'
+        type: choice
+        default: cutover
+        options: [cutover, replica, parallel]
+      spawn_after_seconds:
+        description: 'Seconds before this box dispatches its successor (10800 = 3h; lower it to test the chain)'
+        default: '10800'
+      handoff_lead_seconds:
+        description: 'Seconds before the kill to start handing over'
+        default: '900'
+  # spawn-successor.sh dispatches with only `ref`, so every input above falls back
+  # to its default in the chained runs. That is intended: a test run's shortened
+  # timings must not propagate to the whole rotation.
 
 defaults:
   run:
@@ -51,6 +66,28 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           REPO: ${{ secrets.REPO }}
+          # Which repo/branch this box dispatches its successor on. GITHUB_* are
+          # already in every step's environment, but they are passed explicitly
+          # here so the chain is greppable: whatever ref started this run is the
+          # ref the next run gets, so the rotation stays on one branch.
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SPAWN_REF: ${{ github.ref_name }}
+          SPAWN_REPO: ${{ github.repository }}
+          SPAWN_WORKFLOW: server.yml
+          # Rotation behaviour. HANDOFF_MODE: cutover (silent successor, rebuilt
+          # from the final backup) | replica (streaming standby, promoted) |
+          # parallel (both serve — TWO DIVERGENT DATABASES, read-only sites only).
+          HANDOFF_MODE: ${{ inputs.handoff_mode }}
+          SPAWN_AFTER_SECONDS: ${{ inputs.spawn_after_seconds }}
+          HANDOFF_LEAD_SECONDS: ${{ inputs.handoff_lead_seconds }}
+          # Must match the `sleep 6h` below — it is how the box knows its deadline.
+          JOB_TTL_SECONDS: '21600'
+          # Bounded so an unrestorable archive fails loudly in 30m instead of
+          # hanging until GitHub kills the VM.
+          CNPG_WAIT_TIMEOUT: 30m
+          # How many old archive prefixes to keep in R2 (r2_prune).
+          R2_KEEP: '3'
           # NO K3S_URL/K3S_TOKEN here: get.k3s.io reads them straight from the
           # environment and silently installs an *agent* that joins that cluster,
           # even though linux-solo.sh never references them.
