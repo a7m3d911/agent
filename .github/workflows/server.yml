@@ -70,6 +70,12 @@ jobs:
           # already in every step's environment, but they are passed explicitly
           # here so the chain is greppable: whatever ref started this run is the
           # ref the next run gets, so the rotation stays on one branch.
+          # Dispatching the successor needs a PAT with `workflow` scope: a
+          # workflow_dispatch sent with the built-in GITHUB_TOKEN is silently
+          # ignored and never starts a run (GitHub's recursion guard).
+          # Kept separate from GH_TOKEN, which ghcr uses — different job, and the
+          # rotation must not break when the registry credential is rotated.
+          SPAWN_TOKEN: ${{ secrets.SPAWN_TOKEN }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           SPAWN_REF: ${{ github.ref_name }}
