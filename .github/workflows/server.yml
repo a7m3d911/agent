@@ -7,8 +7,9 @@ name: k3s Cluster (rotating)
 #
 # No `schedule:` here on purpose. Cron only ever fires from the DEFAULT branch,
 # and this file lives on a feature branch — a schedule here would silently never
-# run. Rotation is driven by keep-alive.yml on main, which dispatches this
-# workflow with ref=chore/infra-7f3a2c so the run uses THIS copy of the file.
+# run. Instead each run dispatches its OWN successor partway through its life
+# (the "Dispatch the successor" step below), so the chain is self-sustaining and
+# every dispatch is visible in the job log that made it.
 on:
   workflow_dispatch:
     inputs:
@@ -94,8 +95,60 @@ jobs:
           CNPG_WAIT_TIMEOUT: 30m
           # How many old archive prefixes to keep in R2 (r2_prune).
           R2_KEEP: '3'
+          # The workflow dispatches the successor itself (step below), so the
+          # box must not also arm a spawn timer — two dispatchers, two successors.
+          SPAWN_FROM_WORKFLOW: '1'
           # NO K3S_URL/K3S_TOKEN here: get.k3s.io reads them straight from the
           # environment and silently installs an *agent* that joins that cluster,
           # even though linux-solo.sh never references them.
+      # The 6h keepalive, split in two so the successor is dispatched from the
+      # workflow itself rather than from a systemd timer on the VM. The timer
+      # version failed silently twice: its log lives in /var/log on a box that is
+      # destroyed an hour later, so a bad token looked exactly like "nothing
+      # happened". Here the dispatch is a step — its output is in this job's log.
+      - name: Keep alive until the successor is due
+        run: sleep ${{ inputs.spawn_after_seconds || 10800 }}
+
+      - name: Dispatch the successor
+        # Never fail the job: this cluster is serving traffic, and killing it at
+        # T+3h because a dispatch failed would turn a rotation problem into an
+        # outage. A failure here is loud in the log and the cluster keeps running.
+        continue-on-error: true
+        env:
+          # Needs `workflow` scope. GITHUB_TOKEN cannot do this — GitHub silently
+          # drops a workflow_dispatch made with it — and a `repo`-only PAT fails
+          # with "Must have admin rights to Repository (403)".
+          GH_TOKEN: ${{ secrets.SPAWN_TOKEN }}
+        run: |
+          set -uo pipefail
+          WF="/repos/${{ github.repository }}/actions/workflows/server.yml"
+
+          # Don't fan out. Each cluster spawns exactly one successor, so with a
+          # third started by hand the chain would otherwise grow every rotation.
+          active=0
+          for s in queued in_progress; do
+            n=$(gh api "$WF/runs?status=$s&per_page=100" --jq '.total_count // 0' 2>/dev/null || echo 0)
+            active=$((active + n))
+          done
+          echo "Active runs: $active"
+          if [ "$active" -ge 2 ]; then
+            echo "Already $active clusters alive — not spawning."
+            exit 0
+          fi
+
+          for attempt in 1 2 3 4 5; do
+            if gh api --method POST "$WF/dispatches" -f ref="${{ github.ref_name }}"; then
+              echo "Dispatched successor on ${{ github.ref_name }}"
+              exit 0
+            fi
+            echo "Attempt $attempt failed — retrying in $((attempt * 20))s"
+            sleep $((attempt * 20))
+          done
+          echo "ALERT: could not dispatch a successor. The rotation chain is broken."
+          echo "Hint: SPAWN_TOKEN must be a PAT with 'workflow' scope."
+          exit 1
+
+      # The rest of the 6h. GitHub kills the VM at the end of it regardless; the
+      # on-box handoff.timer fires 15m before that to hand traffic over.
       - name: Keep Running Ubuntu System and keepAlive
-        run: sleep 6h
+        run: sleep 3h
