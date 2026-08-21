@@ -82,6 +82,8 @@ jobs:
           SPAWN_REF: ${{ github.ref_name }}
           SPAWN_REPO: ${{ github.repository }}
           SPAWN_WORKFLOW: server.yml
+          # Lets the spawn guard exclude this run from its "how many are alive" count.
+          GITHUB_RUN_ID: ${{ github.run_id }}
           # Rotation behaviour. HANDOFF_MODE: cutover (silent successor, rebuilt
           # from the final backup) | replica (streaming standby, promoted) |
           # parallel (both serve — TWO DIVERGENT DATABASES, read-only sites only).
@@ -123,16 +125,21 @@ jobs:
           set -uo pipefail
           WF="/repos/${{ github.repository }}/actions/workflows/server.yml"
 
-          # Don't fan out. Each cluster spawns exactly one successor, so with a
-          # third started by hand the chain would otherwise grow every rotation.
-          active=0
+          # Don't fan out — but count OTHER runs, never this one. At T+3h the
+          # normal state is self + predecessor = 2 alive, so a guard that counts
+          # itself always sees 2 and never spawns: the chain dies on the very
+          # first hop. Excluding self, "2 others" means someone started a run by
+          # hand and the rotation genuinely does not need another.
+          others=0
           for s in queued in_progress; do
-            n=$(gh api "$WF/runs?status=$s&per_page=100" --jq '.total_count // 0' 2>/dev/null || echo 0)
-            active=$((active + n))
+            n=$(gh api "$WF/runs?status=$s&per_page=100" \
+                  --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length" \
+                  2>/dev/null || echo 0)
+            others=$((others + n))
           done
-          echo "Active runs: $active"
-          if [ "$active" -ge 2 ]; then
-            echo "Already $active clusters alive — not spawning."
+          echo "Other clusters alive (excluding this run): $others"
+          if [ "$others" -ge 2 ]; then
+            echo "Already $others other clusters alive — not spawning."
             exit 0
           fi
 
