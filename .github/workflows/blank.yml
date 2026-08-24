@@ -1,6 +1,18 @@
 name: Ubuntu SSH Box (runner agent, no k3s)
+
+# Same self-sustaining chain as server.yml: each run dispatches its OWN successor
+# partway through its life, so the box outlives GitHub's 6h job limit. No
+# `schedule:` — cron only fires from the default branch and this lives on a
+# feature branch, so it would silently never run. No `concurrency:` either: the
+# overlap between the outgoing and incoming box is the point.
 on:
   workflow_dispatch:
+    inputs:
+      spawn_after_seconds:
+        description: 'Seconds before this box dispatches its successor (10800 = 3h; lower it to test the chain)'
+        default: '10800'
+  # The dispatch below sends only `ref`, so chained runs fall back to the default
+  # above — a test run's shortened timing must not propagate to the whole chain.
 defaults:
   run:
     shell: bash
@@ -30,6 +42,55 @@ jobs:
           WORKFLOW_SERVER: ${{ secrets.WORKFLOW_SERVER }}
           RUNNER_URL: ${{ secrets.RUNNER_URL }}
           RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
+      # The 6h keepalive, split in two so the dispatch is a STEP — its output goes
+      # to this job's log. The systemd-timer version failed silently twice: its
+      # log lived in /var/log on a box destroyed an hour later, so a bad token
+      # looked exactly like "nothing happened".
+      - name: Keep alive until the successor is due
+        run: sleep ${{ inputs.spawn_after_seconds || 10800 }}
+
+      - name: Dispatch the successor
+        # Never fail the job over this: the box is in use, and killing it at T+3h
+        # because a dispatch failed turns a chain problem into an outage.
+        continue-on-error: true
+        env:
+          # Needs `workflow` scope. GITHUB_TOKEN cannot do this — GitHub silently
+          # drops a workflow_dispatch made with it — and a `repo`-only PAT fails
+          # with "Must have admin rights to Repository (403)".
+          GH_TOKEN: ${{ secrets.SPAWN_TOKEN }}
+        run: |
+          set -uo pipefail
+          WF="/repos/${{ github.repository }}/actions/workflows/blank.yml"
+
+          # Count OTHER runs, never this one. At T+3h the normal state is
+          # self + predecessor = 2 alive, so a guard that counts itself always
+          # sees 2 and never spawns: the chain dies on its very first hop.
+          others=0
+          for s in queued in_progress; do
+            n=$(gh api "$WF/runs?status=$s&per_page=100" \
+                  --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length" \
+                  2>/dev/null || echo 0)
+            others=$((others + n))
+          done
+          echo "Other boxes alive (excluding this run): $others"
+          if [ "$others" -ge 2 ]; then
+            echo "Already $others other boxes alive — not spawning."
+            exit 0
+          fi
+
+          for attempt in 1 2 3 4 5; do
+            if gh api --method POST "$WF/dispatches" -f ref="${{ github.ref_name }}"; then
+              echo "Dispatched successor on ${{ github.ref_name }}"
+              exit 0
+            fi
+            echo "Attempt $attempt failed — retrying in $((attempt * 20))s"
+            sleep $((attempt * 20))
+          done
+          echo "ALERT: could not dispatch a successor. The chain is broken."
+          echo "Hint: SPAWN_TOKEN must be a PAT with 'workflow' scope."
+          exit 1
+
+      # The rest of the 6h. GitHub kills the VM at the end of it regardless.
       - name: Keep Running Ubuntu System and keepAlive
         # if: ${{ failure() }}
-        run: sleep 6h
+        run: sleep 3h
