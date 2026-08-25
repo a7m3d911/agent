@@ -122,12 +122,18 @@ jobs:
         # T+3h because a dispatch failed would turn a rotation problem into an
         # outage. A failure here is loud in the log and the cluster keeps running.
         continue-on-error: true
-        # always(), because the chain must survive a BROKEN run, not just a
-        # healthy one. Run 127 died 4 minutes in on a transient github.com
-        # timeout; with the default success() this step was skipped, nothing
-        # dispatched a successor, and the site stayed down until someone noticed.
-        # A bootstrap that fails is exactly when the next box is most needed.
-        if: always()
+        # Runs on success AND failure, because the chain must survive a BROKEN
+        # run: run 127 died 4 minutes in on a transient github.com timeout, the
+        # default success() skipped this step, nothing dispatched a successor,
+        # and the site stayed down until someone noticed. A bootstrap that fails
+        # is exactly when the next box is most needed.
+        #
+        # !cancelled(), NOT always(): a human cancelling a run means "stop, I am
+        # replacing this box myself" — always() answers that by spawning one
+        # anyway, next to the one they just started by hand. Two bootstraps, two
+        # archives, a forked database. Note also that an always() step keeps
+        # running THROUGH the cancellation and only /force-cancel stops it.
+        if: ${{ !cancelled() }}
         env:
           # Needs `workflow` scope. GITHUB_TOKEN cannot do this — GitHub silently
           # drops a workflow_dispatch made with it — and a `repo`-only PAT fails
