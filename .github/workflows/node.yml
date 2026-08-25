@@ -1,0 +1,169 @@
+name: k3s Worker Node (rotating)
+
+# A worker node, not a cluster. The control plane, Postgres and Redis live on
+# ty-stage; this box only joins, runs pods, and leaves. That is the whole file —
+# no CNPG promotion, no WAL flush, no DNS flip, because nothing here owns state.
+#
+# Each run joins at T+0, dispatches its successor at T+3h, and leaves at T+5h.
+# Two nodes are therefore Ready at all times and a rotation is a planned
+# departure onto a peer that has been warm for two hours.
+#
+# Do NOT add a `concurrency:` block: cancelling the in-progress run is exactly
+# the overlap this design depends on.
+#
+# No `schedule:` here on purpose. Cron only ever fires from the DEFAULT branch,
+# and this file lives on a feature branch — a schedule here would silently never
+# run. Instead each run dispatches its OWN successor partway through its life
+# (the "Dispatch the successor" step below), so the chain is self-sustaining and
+# every dispatch is visible in the job log that made it. Cold start is manual by
+# construction: with nothing running, nothing spawns anything (`make trigger
+# WF=node.yml`).
+on:
+  workflow_dispatch:
+    inputs:
+      spawn_after_seconds:
+        description: 'Seconds before this node dispatches its successor (10800 = 3h; lower it to test the chain)'
+        default: '10800'
+      leave_after_seconds:
+        description: 'Seconds before this node removes itself from the cluster (18000 = 5h)'
+        default: '18000'
+  # spawn-successor dispatches with only `ref`, so every input above falls back
+  # to its default in the chained runs. That is intended: a test run's shortened
+  # timings must not propagate to the whole rotation.
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3.5.2
+      - name: Preparing Linux Environment
+        run: sudo apt-get update
+      - name: Setting Up the Ubuntu Environment
+        id: setup
+        run: |
+          # Without these, linux-ser.sh falls through to its else branch and
+          # installs a whole standalone k3s server — a second cluster silently
+          # appearing instead of a node joining this one.
+          : "${K3S_URL:?K3S_URL unset — linux-ser.sh would install a standalone server, not a node}"
+          : "${K3S_TOKEN:?K3S_TOKEN unset — same}"
+          bash linux-ser.sh
+        env:
+          # Mesh address of ty-stage, NOT its public IP: the agent has to reach
+          # the API over the same interface flannel uses, and the server's cert
+          # must carry this address in --tls-san.
+          K3S_URL: ${{ secrets.K3S_URL }}
+          # /var/lib/rancher/k3s/server/node-token on ty-stage. This is an agent
+          # join token, not a kubectl credential — it cannot talk to the API.
+          K3S_TOKEN: ${{ secrets.K3S_TOKEN }}
+          # VPN mesh — netbird | tailscale. Only the selected one's keys are read.
+          # Must match how the server was installed (--flannel-iface), or every
+          # node is Ready and no cross-node pod traffic works.
+          VPN_PROVIDER: ${{ vars.VPN_PROVIDER }}
+          NETBIRD_MANAGEMENT_URL: ${{ secrets.NETBIRD_MANAGEMENT_URL }}
+          NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          LINUX_USER_PASSWORD: ${{ secrets.LINUX_USER_PASSWORD }}
+          LINUX_USERNAME: ${{ secrets.LINUX_USERNAME }}
+          # Deliberately not secrets.LINUX_MACHINE_NAME. The mesh coordinator
+          # silently renames a peer that reuses a live hostname, and k3s rejects
+          # a node password from a duplicate one; a run-scoped name also makes
+          # the box greppable in `kubectl get nodes`.
+          LINUX_MACHINE_NAME: node-${{ github.run_number }}
+          # Must match the sum of the sleeps below — it is how the box knows its
+          # deadline.
+          JOB_TTL_SECONDS: '18000'
+          # Which repo/branch this box dispatches its successor on. GITHUB_* are
+          # already in every step's environment, but they are passed explicitly
+          # here so the chain is greppable: whatever ref started this run is the
+          # ref the next run gets, so the rotation stays on one branch.
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SPAWN_WORKFLOW: node.yml
+          # Lets the spawn guard exclude this run from its "how many are alive" count.
+          GITHUB_RUN_ID: ${{ github.run_id }}
+
+      - name: Keep alive until the successor is due
+        run: sleep ${{ inputs.spawn_after_seconds || 10800 }}
+
+      - name: Dispatch the successor
+        # Never fail the job: this node is running pods, and killing it at T+3h
+        # because a dispatch failed would turn a rotation problem into an
+        # outage. A failure here is loud in the log and the node keeps serving.
+        continue-on-error: true
+        # always(), because the chain must survive a BROKEN run, not just a
+        # healthy one. A bootstrap that fails is exactly when the next box is
+        # most needed.
+        if: always()
+        env:
+          # Needs `workflow` scope. GITHUB_TOKEN cannot do this — GitHub silently
+          # drops a workflow_dispatch made with it — and a `repo`-only PAT fails
+          # with "Must have admin rights to Repository (403)".
+          GH_TOKEN: ${{ secrets.SPAWN_TOKEN }}
+        run: |
+          set -uo pipefail
+          WF="/repos/${{ github.repository }}/actions/workflows/node.yml"
+
+          # Reached here without a working box: the "keep alive" sleep was
+          # skipped, so this is minutes in, not hours. Back off before replacing
+          # it — otherwise a permanently broken bootstrap becomes a dispatch
+          # loop burning a run every few minutes.
+          if [ "${{ steps.setup.outcome }}" != "success" ]; then
+            echo "Setup failed (${{ steps.setup.outcome }}) — backing off 10m, then replacing this box."
+            sleep 600
+          fi
+
+          # Don't fan out — but count OTHER runs, never this one. At T+3h the
+          # normal state is self + predecessor = 2 alive, so a guard that counts
+          # itself always sees 2 and never spawns: the chain dies on the very
+          # first hop. Excluding self, "2 others" means someone started a run by
+          # hand and the rotation genuinely does not need another.
+          others=0
+          for s in queued in_progress; do
+            n=$(gh api "$WF/runs?status=$s&per_page=100" \
+                  --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length" \
+                  2>/dev/null || echo 0)
+            others=$((others + n))
+          done
+          echo "Other nodes alive (excluding this run): $others"
+          if [ "$others" -ge 2 ]; then
+            echo "Already $others other nodes alive — not spawning."
+            exit 0
+          fi
+
+          for attempt in 1 2 3 4 5; do
+            if gh api --method POST "$WF/dispatches" -f ref="${{ github.ref_name }}"; then
+              echo "Dispatched successor on ${{ github.ref_name }}"
+              exit 0
+            fi
+            echo "Attempt $attempt failed — retrying in $((attempt * 20))s"
+            sleep $((attempt * 20))
+          done
+          echo "ALERT: could not dispatch a successor. The rotation chain is broken."
+          echo "Hint: SPAWN_TOKEN must be a PAT with 'workflow' scope."
+          exit 1
+
+      - name: Keep serving until the drain deadline
+        run: sleep $(( ${{ inputs.leave_after_seconds || 18000 }} - ${{ inputs.spawn_after_seconds || 10800 }} ))
+
+      - name: Leave the cluster
+        # always(), so a node that broke halfway still takes itself out rather
+        # than sitting NotReady until GitHub reclaims the VM an hour later.
+        if: always()
+        continue-on-error: true
+        # ponytail: stopping the agent IS the disconnect. Every manifest in
+        # configs/ already carries tolerationSeconds:30 on unreachable/not-ready,
+        # so pods evict ~30s later onto the successor that joined at T+3h and is
+        # warm. A real cordon+drain would be gentler but needs a kubeconfig on
+        # the runner — add KUBECONFIG_B64 and swap these two lines if the
+        # eviction gap ever shows up in the latency graphs.
+        #
+        # This leaves the Node object behind in the API (uninstall is local
+        # only), so `kubectl get nodes` collects one NotReady row per rotation.
+        # Reaped by a cron on ty-stage; see the plan.
+        run: |
+          sudo systemctl stop k3s-agent || true
+          sudo /usr/local/bin/k3s-agent-uninstall.sh || true
