@@ -1,9 +1,14 @@
-#linux-ser.sh LINUX_USER_PASSWORD TAILSCALE_AUTH_KEY LINUX_USERNAME LINUX_MACHINE_NAME [K3S_URL K3S_TOKEN] [GDRIVE_TOKEN] [GDRIVE_FOLDER] [CONFIG_DEST]
+#linux-ser.sh LINUX_USER_PASSWORD LINUX_USERNAME LINUX_MACHINE_NAME [VPN_PROVIDER] [K3S_URL K3S_TOKEN] [GDRIVE_TOKEN] [GDRIVE_FOLDER] [CONFIG_DEST]
 #!/bin/bash
 #
-# Provisions a fresh Ubuntu/Debian box as a single-node Kubernetes server (k3s),
-# reachable over Tailscale SSH. Same user/SSH + Tailscale setup as linux-ssh.sh,
-# but without the GitHub runner / workflow-agent bits.
+# Provisions a fresh Ubuntu/Debian box as a k3s node: a worker joining an existing
+# cluster when K3S_URL+K3S_TOKEN are set, otherwise a standalone single-node server.
+# Reachable over the VPN mesh. No GitHub runner / workflow-agent bits.
+#
+# The mesh is whichever scripts/vpn.sh selects (VPN_PROVIDER=netbird|tailscale,
+# default netbird). Its keys are that provider's:
+#   netbird   : NETBIRD_MANAGEMENT_URL, NETBIRD_SETUP_KEY
+#   tailscale : TAILSCALE_AUTH_KEY
 
 ### Create login user with sudo ###
 
@@ -15,39 +20,43 @@ sudo hostname $LINUX_MACHINE_NAME
 
 ### Validate required inputs ###
 
-if [[ -z "$TAILSCALE_AUTH_KEY" ]]; then
-  echo "Please set 'TAILSCALE_AUTH_KEY'"
-  exit 2
-fi
-
 if [[ -z "$LINUX_USER_PASSWORD" ]]; then
   echo "Please set 'LINUX_USER_PASSWORD' for user: $USER"
   exit 3
 fi
 
-echo "### Install Tailscale ###"
+# One mesh behind one interface. VPN_PROVIDER picks it; everything below only
+# ever refers to $VPN_IP / $VPN_IFACE, so swapping providers is a variable.
+source "$(dirname "$0")/scripts/vpn.sh"
 
-curl -fsSL https://tailscale.com/install.sh | sh
+# vpn_ip parses netbird's JSON status. Present on GitHub runners, absent on a
+# fresh box — and without it vpn_ip returns empty and this looks like the mesh
+# failed to come up.
+command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
+
+echo "### Install VPN ($VPN_PROVIDER) ###"
+
+vpn_install
 
 echo "### Update user: $USER password ###"
 echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
 
-echo "### Start Tailscale with SSH enabled ###"
+echo "### Join the mesh as $LINUX_MACHINE_NAME ###"
 
-sudo tailscale up --authkey="$TAILSCALE_AUTH_KEY" --ssh --hostname="$LINUX_MACHINE_NAME" --advertise-exit-node
+vpn_up "$LINUX_MACHINE_NAME" || exit 4
 
-sleep 5
-TAILSCALE_IP=$(tailscale ip -4)
+# Retried inside vpn_ip: both daemons report the address a beat after `up`.
+VPN_IP=$(vpn_ip)
 
-if [[ -n "$TAILSCALE_IP" ]]; then
+if [[ -n "$VPN_IP" ]]; then
   echo ""
   echo "=========================================="
-  echo "Tailscale IP: $TAILSCALE_IP"
-  echo "To connect: ssh $USER@$TAILSCALE_IP"
+  echo "Mesh IP ($VPN_PROVIDER, $VPN_IFACE): $VPN_IP"
+  echo "To connect: ssh $USER@$VPN_IP"
   echo "or connect with: ssh $USER@$LINUX_MACHINE_NAME"
   echo "=========================================="
 else
-  echo "Failed to start Tailscale"
+  echo "Failed to get a mesh IP from $VPN_PROVIDER"
   exit 4
 fi
 
@@ -58,7 +67,7 @@ sudo apt-get update && sudo apt-get install -y nfs-common
 
 # Mode: if K3S_URL + K3S_TOKEN are set, join an existing cluster as a worker node.
 #       Otherwise install as a standalone single-node server (control-plane + worker).
-#   K3S_URL   : https://<server-tailscale-ip>:6443
+#   K3S_URL   : https://<server-mesh-ip>:6443
 #   K3S_TOKEN : contents of /var/lib/rancher/k3s/server/node-token on the server
 if [[ -n "$K3S_URL" && -n "$K3S_TOKEN" ]]; then
   echo "### Join k3s cluster as worker node -> $K3S_URL ###"
@@ -74,8 +83,8 @@ if [[ -n "$K3S_URL" && -n "$K3S_TOKEN" ]]; then
   curl -sfL https://get.k3s.io | K3S_URL="$K3S_URL" K3S_TOKEN="$K3S_TOKEN" sh -s - \
     --node-name "$LINUX_MACHINE_NAME" \
     --with-node-id \
-    --node-ip "$TAILSCALE_IP" \
-    --flannel-iface tailscale0
+    --node-ip "$VPN_IP" \
+    --flannel-iface "$VPN_IFACE"
 
   echo ""
   echo "=========================================="
@@ -88,17 +97,17 @@ else
 
   # Single binary = control-plane + worker + containerd + flannel CNI + local-path storage.
   # --write-kubeconfig-mode 644 so the created user can read kubeconfig without sudo.
-  # --tls-san $LINUX_MACHINE_NAME / $TAILSCALE_IP so kubectl works over Tailscale from other machines.
-  # --node-ip / --flannel-iface MUST match the agents (which join on tailscale0):
+  # --tls-san $LINUX_MACHINE_NAME / $VPN_IP so kubectl works over the mesh from other machines.
+  # --node-ip / --flannel-iface MUST match the agents (which join on the same mesh iface):
   # otherwise the server advertises its flannel VXLAN endpoint on the public NIC,
-  # agents expect it on tailscale0, and cross-node pod traffic (incl. CoreDNS) breaks.
+  # agents expect it on $VPN_IFACE, and cross-node pod traffic (incl. CoreDNS) breaks.
   curl -sfL https://get.k3s.io | sh -s - \
     --write-kubeconfig-mode 644 \
     --node-name "$LINUX_MACHINE_NAME" \
-    --node-ip "$TAILSCALE_IP" \
-    --flannel-iface tailscale0 \
+    --node-ip "$VPN_IP" \
+    --flannel-iface "$VPN_IFACE" \
     --tls-san "$LINUX_MACHINE_NAME" \
-    --tls-san "$TAILSCALE_IP"
+    --tls-san "$VPN_IP"
 
   echo "### Wait for k3s node to become Ready ###"
   until sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready '; do
@@ -109,7 +118,7 @@ else
   # Make kubeconfig usable by the created login user (kubectl reads ~/.kube/config).
   sudo mkdir -p /home/$LINUX_USERNAME/.kube
   sudo cp /etc/rancher/k3s/k3s.yaml /home/$LINUX_USERNAME/.kube/config
-  sudo sed -i "s/127.0.0.1/$TAILSCALE_IP/g" /home/$LINUX_USERNAME/.kube/config
+  sudo sed -i "s/127.0.0.1/$VPN_IP/g" /home/$LINUX_USERNAME/.kube/config
   sudo chown -R $LINUX_USERNAME:$LINUX_USERNAME /home/$LINUX_USERNAME/.kube
   sudo ln -sf /usr/local/bin/kubectl /usr/local/bin/k 2>/dev/null || true
 
@@ -117,8 +126,8 @@ else
   echo "=========================================="
   echo "k3s ready. On this box:  sudo k3s kubectl get nodes"
   echo "As $LINUX_USERNAME:       kubectl get nodes"
-  echo "Remote kubeconfig:       /home/$LINUX_USERNAME/.kube/config (API at https://$TAILSCALE_IP:6443)"
-  echo "Join a worker: re-run this script on another box with K3S_URL=https://$TAILSCALE_IP:6443"
+  echo "Remote kubeconfig:       /home/$LINUX_USERNAME/.kube/config (API at https://$VPN_IP:6443)"
+  echo "Join a worker: re-run this script on another box with K3S_URL=https://$VPN_IP:6443"
   echo "               and K3S_TOKEN from /var/lib/rancher/k3s/server/node-token"
   echo "=========================================="
 
