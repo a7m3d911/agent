@@ -66,8 +66,6 @@ jobs:
           NETBIRD_MANAGEMENT_URL: ${{ secrets.NETBIRD_MANAGEMENT_URL }}
           NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          LINUX_USER_PASSWORD: ${{ secrets.LINUX_USER_PASSWORD }}
-          LINUX_USERNAME: ${{ secrets.LINUX_USERNAME }}
           # Deliberately not secrets.LINUX_MACHINE_NAME. The mesh coordinator
           # silently renames a peer that reuses a live hostname, and k3s rejects
           # a node password from a duplicate one; a run-scoped name also makes
