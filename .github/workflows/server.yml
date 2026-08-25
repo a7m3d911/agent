@@ -40,6 +40,7 @@ jobs:
       - name: Preparing Linux Environment
         run: sudo apt-get update
       - name: Setting Up the Ubuntu Environment
+        id: setup
         run: bash linux-server.sh
         env:
           LINUX_USER_PASSWORD: ${{ secrets.LINUX_USER_PASSWORD }}
@@ -61,6 +62,11 @@ jobs:
           GHCR_USER: ${{ secrets.GHCR_USER }}
           GHCR_PAT: ${{ secrets.GHCR_PAT }}   # same PAT the runner already uses
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          # Infisical machine identity (Access Control → Identities), used by
+          # scripts/infisical.sh to mint the `infisical-universal-auth` Secret
+          # the InfisicalSecret CRs authenticate with. Unset = operator skipped.
+          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
+          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           # R2 holds the Postgres base backups and the continuous WAL archive.
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -116,6 +122,12 @@ jobs:
         # T+3h because a dispatch failed would turn a rotation problem into an
         # outage. A failure here is loud in the log and the cluster keeps running.
         continue-on-error: true
+        # always(), because the chain must survive a BROKEN run, not just a
+        # healthy one. Run 127 died 4 minutes in on a transient github.com
+        # timeout; with the default success() this step was skipped, nothing
+        # dispatched a successor, and the site stayed down until someone noticed.
+        # A bootstrap that fails is exactly when the next box is most needed.
+        if: always()
         env:
           # Needs `workflow` scope. GITHUB_TOKEN cannot do this — GitHub silently
           # drops a workflow_dispatch made with it — and a `repo`-only PAT fails
@@ -124,6 +136,15 @@ jobs:
         run: |
           set -uo pipefail
           WF="/repos/${{ github.repository }}/actions/workflows/server.yml"
+
+          # Reached here without a working box: the "keep alive" sleep was
+          # skipped, so this is ~4 minutes in, not 3 hours. Back off before
+          # replacing it — otherwise a permanently broken bootstrap becomes a
+          # dispatch loop burning a run every few minutes.
+          if [ "${{ steps.setup.outcome }}" != "success" ]; then
+            echo "Setup failed (${{ steps.setup.outcome }}) — backing off 10m, then replacing this box."
+            sleep 600
+          fi
 
           # Don't fan out — but count OTHER runs, never this one. At T+3h the
           # normal state is self + predecessor = 2 alive, so a guard that counts
