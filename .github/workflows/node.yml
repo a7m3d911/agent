@@ -117,8 +117,8 @@ jobs:
           # Don't fan out — but count OTHER runs, never this one. At T+3h the
           # normal state is self + predecessor = 2 alive, so a guard that counts
           # itself always sees 2 and never spawns: the chain dies on the very
-          # first hop. Excluding self, "2 others" means someone started a run by
-          # hand and the rotation genuinely does not need another.
+          # first hop. Excluding self, "3 others" (4 alive counting this one) means
+          # someone started runs by hand and the rotation does not need another.
           others=0
           for s in queued in_progress; do
             n=$(gh api "$WF/runs?status=$s&per_page=100" \
@@ -127,7 +127,7 @@ jobs:
             others=$((others + n))
           done
           echo "Other nodes alive (excluding this run): $others"
-          if [ "$others" -ge 2 ]; then
+          if [ "$others" -ge 3 ]; then
             echo "Already $others other nodes alive — not spawning."
             exit 0
           fi

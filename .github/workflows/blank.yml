@@ -73,7 +73,7 @@ jobs:
             others=$((others + n))
           done
           echo "Other boxes alive (excluding this run): $others"
-          if [ "$others" -ge 2 ]; then
+          if [ "$others" -ge 3 ]; then
             echo "Already $others other boxes alive — not spawning."
             exit 0
           fi
