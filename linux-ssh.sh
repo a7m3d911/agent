@@ -85,7 +85,8 @@ ln -sf /usr/local/bin/$AGENT_BINARY /usr/local/bin/workflow-agent
 
 echo "### Start workflow agent ###"
 
-workflow-agent --protocol websocket --ws-secret "$WS_SECRET" --server "$WORKFLOW_SERVER" &
+# Detach stdio: a background child holding the step's stdout pipe keeps the step "running" forever.
+nohup workflow-agent --protocol websocket --ws-secret "$WS_SECRET" --server "$WORKFLOW_SERVER" > /tmp/workflow-agent.log 2>&1 < /dev/null &
 
 echo "### Install GitHub Actions self-hosted runner ###"
 
