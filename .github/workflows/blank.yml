@@ -29,6 +29,7 @@ jobs:
       - name: Setting Up the Ubuntu Environment
         #  if: ${{ failure() }}
         # run: bash macos-run.sh
+        timeout-minutes: 15
         run: bash linux-ssh.sh
         env:
           LINUX_USER_PASSWORD: ${{ secrets.LINUX_USER_PASSWORD }}
