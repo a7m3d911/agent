@@ -70,6 +70,12 @@ timeout 120 gh release download v1.0.3 --pattern "$AGENT_BINARY" --repo marbit-i
 chmod +x /usr/local/bin/$AGENT_BINARY
 ln -sf /usr/local/bin/$AGENT_BINARY /usr/local/bin/workflow-agent
 
+echo "### Persist gh auth for SSH users ###"
+# env -u: gh refuses to store a login while GH_TOKEN is set; SSH sessions don't get GH_TOKEN.
+for u in "$USER" "$LINUX_USERNAME" root; do
+  echo "$GH_TOKEN" | sudo -u "$u" -H env -u GH_TOKEN timeout 60 gh auth login --with-token
+done
+
 # Network calls go BEFORE netbird up: every run hung on the first one made after it.
 sudo netbird up --management-url "$NETBIRD_MANAGEMENT_URL" --setup-key "$NETBIRD_SETUP_KEY" --hostname "$LINUX_MACHINE_NAME" --allow-server-ssh --enable-ssh-root
 
