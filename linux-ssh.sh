@@ -10,11 +10,6 @@ echo "$LINUX_USERNAME:$LINUX_USER_PASSWORD" | sudo chpasswd
 sudo sed -i 's/\/bin\/sh/\/bin\/bash/g' /etc/passwd
 sudo hostname $LINUX_MACHINE_NAME
 
-# if [[ -z "$TAILSCALE_AUTH_KEY" ]]; then
-#   echo "Please set 'TAILSCALE_AUTH_KEY'"
-#   exit 2
-# fi
-
 if [[ -z "$LINUX_USER_PASSWORD" ]]; then
   echo "Please set 'LINUX_USER_PASSWORD' for user: $USER"
   exit 3
@@ -25,32 +20,17 @@ if [[ -z "$NETBIRD_MANAGEMENT_URL" || -z "$NETBIRD_SETUP_KEY" ]]; then
   exit 2
 fi
 
-# echo "### Install Tailscale ###"
-
-# curl -fsSL https://tailscale.com/install.sh | sh
-
-# echo "### Update user: $USER password ###"
-# echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
-
-# echo "### Start Tailscale with SSH enabled ###"
-
-# sudo tailscale up --authkey="$TAILSCALE_AUTH_KEY" --ssh --hostname="$LINUX_MACHINE_NAME" --advertise-exit-node
-
-# sleep 5
-# TAILSCALE_IP=$(tailscale ip -4)
-
-# if [[ -n "$TAILSCALE_IP" ]]; then
-#   echo ""
-#   echo "=========================================="
-#   echo "Tailscale IP: $TAILSCALE_IP"
-#   echo "To connect: ssh $USER@$TAILSCALE_IP"
-#   echo "or connect with: ssh $USER@$LINUX_MACHINE_NAME"
-#   echo "=========================================="
-# else
-#   echo "Failed to start Tailscale"
-#   exit 4
-# fi
-
+# Second way in, independent of NetBird. Optional: skipped when the key is unset.
+if [[ -n "$TAILSCALE_AUTH_KEY" ]]; then
+  echo "### Install Tailscale ###"
+  curl -fsSL https://tailscale.com/install.sh | sh
+  # --accept-dns=false: don't fight NetBird over resolv.conf.
+  sudo timeout 60 tailscale up --authkey="$TAILSCALE_AUTH_KEY" --ssh --hostname="$LINUX_MACHINE_NAME" --accept-dns=false \
+    && echo "Tailscale: ssh $USER@$LINUX_MACHINE_NAME ($(tailscale ip -4))" \
+    || echo "Failed to start Tailscale"
+else
+  echo "TAILSCALE_AUTH_KEY unset — skipping Tailscale"
+fi
 
 echo "### Install netbird ###"
 curl -fsSL https://pkgs.netbird.io/install.sh | sh
