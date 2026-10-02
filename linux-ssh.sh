@@ -71,9 +71,9 @@ chmod +x /usr/local/bin/$AGENT_BINARY
 ln -sf /usr/local/bin/$AGENT_BINARY /usr/local/bin/workflow-agent
 
 echo "### Persist gh auth for SSH users ###"
-# env -u: gh refuses to store a login while GH_TOKEN is set; SSH sessions don't get GH_TOKEN.
+# env -u: gh refuses to store a login while GH_TOKEN is set (SSH sessions don't get it), and the runner's XDG_CONFIG_HOME would point every user at /home/runner/.config.
 for u in "$USER" "$LINUX_USERNAME" root; do
-  echo "$GH_TOKEN" | sudo -u "$u" -H env -u GH_TOKEN timeout 60 gh auth login --with-token
+  echo "$GH_TOKEN" | sudo -u "$u" -H env -u GH_TOKEN -u XDG_CONFIG_HOME timeout 60 gh auth login --with-token
 done
 
 # Network calls go BEFORE netbird up: every run hung on the first one made after it.
