@@ -1,6 +1,9 @@
 #linux-run.sh LINUX_USER_PASSWORD NETBIRD_MANAGEMENT_URL NETBIRD_SETUP_KEY LINUX_USERNAME LINUX_MACHINE_NAME GH_TOKEN WS_SECRET WORKFLOW_SERVER [RUNNER_ORG] [RUNNER_LABELS]
 #!/bin/bash
 
+# Unique per run: overlapping boxes in the chain must not share a NetBird name.
+LINUX_MACHINE_NAME="${LINUX_MACHINE_NAME}-${GITHUB_RUN_ID}"
+
 sudo useradd -m $LINUX_USERNAME
 sudo adduser $LINUX_USERNAME sudo
 echo "$LINUX_USERNAME:$LINUX_USER_PASSWORD" | sudo chpasswd
