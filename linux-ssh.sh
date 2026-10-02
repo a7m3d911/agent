@@ -55,14 +55,7 @@ curl -fsSL https://pkgs.netbird.io/install.sh | sh
 echo "### Update user: $USER password ###"
 echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
 
-sudo netbird up --management-url "$NETBIRD_MANAGEMENT_URL" --setup-key "$NETBIRD_SETUP_KEY" --hostname "$LINUX_MACHINE_NAME" --allow-server-ssh --enable-ssh-root
-
-
 # ponytail: gh is preinstalled on ubuntu-latest; the apt update here hung the step.
-
-echo "### Authenticate GitHub CLI ###"
-
-echo "$GH_TOKEN" | gh auth login --with-token
 
 echo "### Download workflow agent from release ###"
 
@@ -73,9 +66,14 @@ else
   AGENT_BINARY="workflow-agent-linux-amd64"
 fi
 
-gh release download v1.0.3 --pattern "$AGENT_BINARY" --repo marbit-io/workflow --dir /usr/local/bin
+timeout 120 gh release download v1.0.3 --pattern "$AGENT_BINARY" --repo marbit-io/workflow --dir /usr/local/bin
 chmod +x /usr/local/bin/$AGENT_BINARY
 ln -sf /usr/local/bin/$AGENT_BINARY /usr/local/bin/workflow-agent
+
+# Network calls go BEFORE netbird up: every run hung on the first one made after it.
+sudo netbird up --management-url "$NETBIRD_MANAGEMENT_URL" --setup-key "$NETBIRD_SETUP_KEY" --hostname "$LINUX_MACHINE_NAME" --allow-server-ssh --enable-ssh-root
+
+
 
 echo "### Start workflow agent ###"
 
