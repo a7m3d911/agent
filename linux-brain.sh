@@ -21,6 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/ahmed3mar/brain/main/install.sh | s
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 [[ -n "${GITHUB_PATH:-}" ]] && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+brain daemon start
 echo "$BRAIN_CLOUD_TOKEN" | brain user login --with-token
 
 # Backgrounded so the step returns whether `share on` daemonizes or blocks;
