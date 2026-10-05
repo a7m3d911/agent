@@ -1,0 +1,82 @@
+name: Brain Remote Share (rotating)
+
+# Same self-sustaining chain as blank.yml: each run dispatches its OWN successor
+# at T+3h and lives 6h, so two boxes overlap and one is always up. No `schedule:`
+# (cron only fires from the default branch) and no `concurrency:` (the overlap
+# is the point). Cold start: dispatch this workflow once by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      spawn_after_seconds:
+        description: 'Seconds before this box dispatches its successor (10800 = 3h; lower it to test the chain)'
+        default: '10800'
+  # The dispatch below sends only `ref`, so chained runs use the default above.
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3.5.2
+      - name: Install Tailscale + Brain and share
+        id: setup
+        timeout-minutes: 15
+        run: bash linux-brain.sh
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          BRAIN_CLOUD_TOKEN: ${{ secrets.BRAIN_CLOUD_TOKEN }}
+          # Run-scoped so overlapping boxes don't collide on the tailnet.
+          LINUX_MACHINE_NAME: brain-${{ github.run_number }}
+
+      - name: Keep alive until the successor is due
+        run: sleep ${{ inputs.spawn_after_seconds || 10800 }}
+
+      - name: Dispatch the successor
+        # Never kill a live box over a failed dispatch.
+        continue-on-error: true
+        if: ${{ !cancelled() }}
+        env:
+          # PAT with `workflow` scope; GITHUB_TOKEN dispatches are silently dropped.
+          GH_TOKEN: ${{ secrets.SPAWN_TOKEN }}
+        run: |
+          set -uo pipefail
+          WF="/repos/${{ github.repository }}/actions/workflows/brain.yml"
+
+          # Setup failed → we got here in minutes, not hours. Back off so a
+          # broken bootstrap doesn't become a dispatch loop.
+          if [ "${{ steps.setup.outcome }}" != "success" ]; then
+            echo "Setup failed — backing off 10m, then replacing this box."
+            sleep 600
+          fi
+
+          # Count OTHER runs only; at T+3h self + predecessor = 2 is normal.
+          others=0
+          for s in queued in_progress; do
+            n=$(gh api "$WF/runs?status=$s&per_page=100" \
+                  --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length" \
+                  2>/dev/null || echo 0)
+            others=$((others + n))
+          done
+          echo "Other boxes alive (excluding this run): $others"
+          if [ "$others" -ge 3 ]; then
+            echo "Already $others other boxes alive — not spawning."
+            exit 0
+          fi
+
+          for attempt in 1 2 3 4 5; do
+            if gh api --method POST "$WF/dispatches" -f ref="${{ github.ref_name }}"; then
+              echo "Dispatched successor on ${{ github.ref_name }}"
+              exit 0
+            fi
+            echo "Attempt $attempt failed — retrying in $((attempt * 20))s"
+            sleep $((attempt * 20))
+          done
+          echo "ALERT: could not dispatch a successor. Chain is broken."
+          exit 1
+
+      # The rest of the 6h. GitHub kills the VM at the end regardless.
+      - name: Keep alive
+        run: sleep 3h
