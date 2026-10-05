@@ -28,6 +28,7 @@ jobs:
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
           BRAIN_CLOUD_TOKEN: ${{ secrets.BRAIN_CLOUD_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           # Run-scoped so overlapping boxes don't collide on the tailnet.
           LINUX_MACHINE_NAME: brain-${{ github.run_number }}
 

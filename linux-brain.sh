@@ -15,6 +15,16 @@ else
   echo "TAILSCALE_AUTH_KEY unset — skipping Tailscale"
 fi
 
+if [[ -n "${GH_TOKEN:-}" ]]; then
+  echo "### Install + auth gh ###"
+  command -v gh >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gh; }
+  # env -u: gh refuses to store a login while GH_TOKEN is set; XDG_CONFIG_HOME points at the runner's dir.
+  echo "$GH_TOKEN" | env -u GH_TOKEN -u XDG_CONFIG_HOME gh auth login --with-token
+  env -u GH_TOKEN -u XDG_CONFIG_HOME gh auth status
+else
+  echo "GH_TOKEN unset — skipping gh auth"
+fi
+
 echo "### Install Brain ###"
 curl -fsSL https://raw.githubusercontent.com/ahmed3mar/brain/main/install.sh | sh
 # ponytail: the installer may drop the binary in a user bin dir not on PATH yet.
