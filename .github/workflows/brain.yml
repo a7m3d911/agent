@@ -10,6 +10,9 @@ on:
       spawn_after_seconds:
         description: 'Seconds before this box dispatches its successor (10800 = 3h; lower it to test the chain)'
         default: '10800'
+      drain_after_seconds:
+        description: 'Worker mode: seconds after the successor dispatch before this box stops taking tasks (7200 → drain at 5h)'
+        default: '7200'
   # The dispatch below sends only `ref`, so chained runs use the default above.
 
 defaults:
@@ -19,6 +22,9 @@ defaults:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Secrets can't be read in `if:`; this flag can.
+      WORKER_MODE: ${{ secrets.BRAIN_WORKER_POOL_TOKEN != '' && 'true' || '' }}
     steps:
       - uses: actions/checkout@v3.5.2
       - name: Install Tailscale + Brain and share
@@ -28,6 +34,8 @@ jobs:
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
           BRAIN_CLOUD_TOKEN: ${{ secrets.BRAIN_CLOUD_TOKEN }}
+          # Set → the box is a cloud worker (pool); unset → a remote-shared device.
+          BRAIN_WORKER_POOL_TOKEN: ${{ secrets.BRAIN_WORKER_POOL_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           # Run-scoped so overlapping boxes don't collide on the tailnet.
           LINUX_MACHINE_NAME: brain-${{ github.run_number }}
@@ -79,5 +87,29 @@ jobs:
           exit 1
 
       # The rest of the 6h. GitHub kills the VM at the end regardless.
+      # Device mode just sleeps; worker mode drains, then hands its tasks to a newer box.
       - name: Keep alive
-        run: sleep 3h
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          if [ -n "$WORKER_MODE" ]; then sleep ${{ inputs.drain_after_seconds || 7200 }}; else sleep 3h; fi
+
+      - name: Drain (no new tasks)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && env.WORKER_MODE == 'true' }}
+        continue-on-error: true
+        run: brain worker drain
+
+      - name: Let running work settle
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && env.WORKER_MODE == 'true' }}
+        run: sleep 20m  # ponytail: 6h job cap; 3h + 2h + 20m + 20m handoff + 6m final leaves setup ~10m slack
+
+      - name: Hand off tasks
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && env.WORKER_MODE == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 20
+        run: brain worker drain --handoff --timeout 15m
+
+      # Cancelled or failed above: still move whatever is left before the VM goes.
+      - name: Final handoff
+        if: ${{ always() && env.WORKER_MODE == 'true' }}
+        timeout-minutes: 6
+        run: brain worker drain --handoff --timeout 5m || true

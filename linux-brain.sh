@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Tailscale + Brain remote share. Nothing else.
+# Tailscale + Brain: a cloud worker when BRAIN_WORKER_POOL_TOKEN is set,
+# otherwise a remote-shared device. Nothing else.
 set -euo pipefail
 
-: "${BRAIN_CLOUD_TOKEN:?BRAIN_CLOUD_TOKEN unset}"
+[[ -n "${BRAIN_WORKER_POOL_TOKEN:-}" || -n "${BRAIN_CLOUD_TOKEN:-}" ]] || { echo "BRAIN_WORKER_POOL_TOKEN or BRAIN_CLOUD_TOKEN must be set" >&2; exit 1; }
 LINUX_MACHINE_NAME="${LINUX_MACHINE_NAME:-brain}"
 
 if [[ -n "${TAILSCALE_AUTH_KEY:-}" ]]; then
@@ -30,6 +31,18 @@ curl -fsSL https://raw.githubusercontent.com/ahmed3mar/brain/main/install.sh | s
 # ponytail: the installer may drop the binary in a user bin dir not on PATH yet.
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 [[ -n "${GITHUB_PATH:-}" ]] && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+if [[ -n "${BRAIN_WORKER_POOL_TOKEN:-}" ]]; then
+  # Registers its own worker in the pool; later steps drain and hand off its tasks.
+  nohup brain worker --cloud "${BRAIN_CLOUD_URL:-https://brain.ahmed3mar.com}" \
+    --pool-token "$BRAIN_WORKER_POOL_TOKEN" --name "$LINUX_MACHINE_NAME" \
+    --max-tasks "${BRAIN_WORKER_MAX_TASKS:-3}" --root "${RUNNER_TEMP:-$HOME}/brain" \
+    > "$HOME/brain-worker.log" 2>&1 &
+  sleep 10
+  cat "$HOME/brain-worker.log" || true
+  kill -0 $! # fail the step if the worker already exited
+  exit 0
+fi
 
 brain daemon start
 echo "$BRAIN_CLOUD_TOKEN" | brain user login --with-token
