@@ -34,9 +34,12 @@ export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 
 if [[ -n "${BRAIN_WORKER_POOL_TOKEN:-}" ]]; then
   # Registers its own worker in the pool; later steps drain and hand off its tasks.
+  export BRAIN_WORKER_ROOT="${RUNNER_TEMP:-$HOME}/brain"
+  # `brain worker drain` in later steps finds the worker through this.
+  [[ -n "${GITHUB_ENV:-}" ]] && echo "BRAIN_WORKER_ROOT=$BRAIN_WORKER_ROOT" >> "$GITHUB_ENV"
   nohup brain worker --cloud "${BRAIN_CLOUD_URL:-https://brain.ahmed3mar.com}" \
     --pool-token "$BRAIN_WORKER_POOL_TOKEN" --name "$LINUX_MACHINE_NAME" \
-    --max-tasks "${BRAIN_WORKER_MAX_TASKS:-3}" --root "${RUNNER_TEMP:-$HOME}/brain" \
+    --max-tasks "${BRAIN_WORKER_MAX_TASKS:-3}" --root "$BRAIN_WORKER_ROOT" \
     > "$HOME/brain-worker.log" 2>&1 &
   sleep 10
   cat "$HOME/brain-worker.log" || true
