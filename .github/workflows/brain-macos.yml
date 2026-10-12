@@ -1,0 +1,115 @@
+name: Brain Remote Share macOS (rotating)
+
+# Same self-sustaining chain as blank.yml: each run dispatches its OWN successor
+# at T+3h and lives 6h, so two boxes overlap and one is always up. No `schedule:`
+# (cron only fires from the default branch) and no `concurrency:` (the overlap
+# is the point). Cold start: dispatch this workflow once by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      spawn_after_seconds:
+        description: 'Seconds before this box dispatches its successor (10800 = 3h; lower it to test the chain)'
+        default: '10800'
+      drain_after_seconds:
+        description: 'Worker mode: seconds after the successor dispatch before this box stops taking tasks (7200 → drain at 5h)'
+        default: '7200'
+  # The dispatch below sends only `ref`, so chained runs use the default above.
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      # Secrets can't be read in `if:`; this flag can.
+      WORKER_MODE: ${{ secrets.BRAIN_WORKER_POOL_TOKEN != '' && 'true' || '' }}
+    steps:
+      - uses: actions/checkout@v3.5.2
+      - name: Install Tailscale + Brain and share
+        id: setup
+        timeout-minutes: 15
+        run: bash linux-brain.sh
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          BRAIN_CLOUD_TOKEN: ${{ secrets.BRAIN_CLOUD_TOKEN }}
+          # Set → the box is a cloud worker (pool); unset → a remote-shared device.
+          BRAIN_WORKER_POOL_TOKEN: ${{ secrets.BRAIN_WORKER_POOL_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          # Run-scoped so overlapping boxes don't collide on the tailnet.
+          LINUX_MACHINE_NAME: brain-macos-${{ github.run_number }}
+
+      - name: Keep alive until the successor is due
+        run: sleep ${{ inputs.spawn_after_seconds || 10800 }}
+
+      - name: Dispatch the successor
+        # Never kill a live box over a failed dispatch.
+        continue-on-error: true
+        if: ${{ !cancelled() }}
+        env:
+          # PAT with `workflow` scope; GITHUB_TOKEN dispatches are silently dropped.
+          GH_TOKEN: ${{ secrets.SPAWN_TOKEN }}
+        run: |
+          set -uo pipefail
+          WF="/repos/${{ github.repository }}/actions/workflows/brain-macos.yml"
+
+          # Setup failed → we got here in minutes, not hours. Back off so a
+          # broken bootstrap doesn't become a dispatch loop.
+          if [ "${{ steps.setup.outcome }}" != "success" ]; then
+            echo "Setup failed — backing off 10m, then replacing this box."
+            sleep 600
+          fi
+
+          # Count OTHER runs only; at T+3h self + predecessor = 2 is normal.
+          others=0
+          for s in queued in_progress; do
+            n=$(gh api "$WF/runs?status=$s&per_page=100" \
+                  --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length" \
+                  2>/dev/null || echo 0)
+            others=$((others + n))
+          done
+          echo "Other boxes alive (excluding this run): $others"
+          if [ "$others" -ge 3 ]; then
+            echo "Already $others other boxes alive — not spawning."
+            exit 0
+          fi
+
+          for attempt in 1 2 3 4 5; do
+            if gh api --method POST "$WF/dispatches" -f ref="${{ github.ref_name }}"; then
+              echo "Dispatched successor on ${{ github.ref_name }}"
+              exit 0
+            fi
+            echo "Attempt $attempt failed — retrying in $((attempt * 20))s"
+            sleep $((attempt * 20))
+          done
+          echo "ALERT: could not dispatch a successor. Chain is broken."
+          exit 1
+
+      # The rest of the 6h. GitHub kills the VM at the end regardless.
+      # Device mode just sleeps; worker mode drains, then hands its tasks to a newer box.
+      - name: Keep alive
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          if [ -n "$WORKER_MODE" ]; then sleep ${{ inputs.drain_after_seconds || 7200 }}; else sleep 3h; fi
+
+      - name: Drain (no new tasks)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && env.WORKER_MODE == 'true' }}
+        continue-on-error: true
+        run: brain worker drain
+
+      - name: Let running work settle
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && env.WORKER_MODE == 'true' }}
+        run: sleep 20m  # ponytail: 6h job cap; 3h + 2h + 20m + 20m handoff + 6m final leaves setup ~10m slack
+
+      - name: Hand off tasks
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && env.WORKER_MODE == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 20
+        run: brain worker drain --handoff --timeout 15m
+
+      # Cancelled or failed above: still move whatever is left before the VM goes.
+      - name: Final handoff
+        if: ${{ always() && env.WORKER_MODE == 'true' }}
+        timeout-minutes: 6
+        run: brain worker drain --handoff --timeout 5m || true

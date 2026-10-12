@@ -8,8 +8,15 @@ LINUX_MACHINE_NAME="${LINUX_MACHINE_NAME:-brain}"
 
 if [[ -n "${TAILSCALE_AUTH_KEY:-}" ]]; then
   echo "### Install Tailscale ###"
-  curl -fsSL https://tailscale.com/install.sh | sh
-  sudo timeout 60 tailscale up --authkey="$TAILSCALE_AUTH_KEY" --ssh --hostname="$LINUX_MACHINE_NAME" --accept-dns=false \
+  if [[ "$(uname)" == Darwin ]]; then
+    # Same as macos-run.sh: brew's tailscale has no service, so run the daemon ourselves.
+    brew install tailscale coreutils  # coreutils: macOS has no `timeout` (brew names it gtimeout)
+    sudo tailscaled --state=/var/lib/tailscale/tailscaled.state > /tmp/tailscaled.log 2>&1 &
+    sleep 3
+  else
+    curl -fsSL https://tailscale.com/install.sh | sh
+  fi
+  sudo "$(command -v timeout || command -v gtimeout)" 60 tailscale up --authkey="$TAILSCALE_AUTH_KEY" --ssh --hostname="$LINUX_MACHINE_NAME" --accept-dns=false \
     && echo "Tailscale: $LINUX_MACHINE_NAME ($(tailscale ip -4))" \
     || echo "Failed to start Tailscale"
 else
@@ -18,7 +25,7 @@ fi
 
 if [[ -n "${GH_TOKEN:-}" ]]; then
   echo "### Install + auth gh ###"
-  command -v gh >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gh; }
+  command -v gh >/dev/null || { [[ "$(uname)" == Darwin ]] && brew install gh || { sudo apt-get update -qq && sudo apt-get install -y -qq gh; }; }
   # env -u: gh refuses to store a login while GH_TOKEN is set; XDG_CONFIG_HOME points at the runner's dir.
   echo "$GH_TOKEN" | env -u GH_TOKEN -u XDG_CONFIG_HOME gh auth login --with-token
   env -u GH_TOKEN -u XDG_CONFIG_HOME gh auth status
