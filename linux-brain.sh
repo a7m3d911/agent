@@ -34,6 +34,12 @@ else
 fi
 
 echo "### Install Brain ###"
+# The installer asks api.github.com anonymously, and shared runner IPs hit the 60/h limit (403).
+# Resolve the version with the authed gh instead; empty → installer falls back to its own lookup.
+if [[ -z "${BRAIN_VERSION:-}" ]] && command -v gh >/dev/null; then
+  BRAIN_VERSION="$(gh release view --repo ahmed3mar/brain --json tagName -q .tagName 2>/dev/null || true)"
+  [[ -n "$BRAIN_VERSION" ]] && export BRAIN_VERSION="${BRAIN_VERSION#v}"
+fi
 curl -fsSL https://raw.githubusercontent.com/ahmed3mar/brain/main/install.sh | sh
 # ponytail: the installer may drop the binary in a user bin dir not on PATH yet.
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
