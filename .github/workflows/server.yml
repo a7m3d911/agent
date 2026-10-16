@@ -165,7 +165,7 @@ jobs:
             others=$((others + n))
           done
           echo "Other clusters alive (excluding this run): $others"
-          if [ "$others" -ge 3 ]; then
+          if [ "$others" -ge 5 ]; then
             echo "Already $others other clusters alive — not spawning."
             exit 0
           fi
