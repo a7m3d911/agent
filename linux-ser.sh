@@ -77,7 +77,10 @@ echo "### Join k3s cluster as worker node -> $K3S_URL ###"
 # so kubelet exits with "unknown flag" and the agent crashloops → never joins.
 # It also wouldn't help here: GitHub kills the 6h runner VM hard, not via a
 # clean systemd shutdown, so the inhibitor-based drain never fires anyway.
-curl -sfL https://get.k3s.io | K3S_URL="$K3S_URL" K3S_TOKEN="$K3S_TOKEN" sh -s - \
+# Bounded: neither curl nor the installer's downloads/restart have a timeout, so a
+# stalled connection or a rejected join hung here silently until GitHub killed the VM.
+K3S_URL="$K3S_URL" K3S_TOKEN="$K3S_TOKEN" timeout 300 \
+  bash -c 'curl -sfL https://get.k3s.io | sh -s - "$@"' _ \
   --node-name "$LINUX_MACHINE_NAME" \
   --with-node-id \
   --node-ip "$VPN_IP" \
