@@ -35,7 +35,11 @@ vpn_up() {
         echo "NETBIRD_MANAGEMENT_URL / NETBIRD_SETUP_KEY unset" >&2; return 2; }
       sudo netbird up --management-url "$NETBIRD_MANAGEMENT_URL" \
         --setup-key "$NETBIRD_SETUP_KEY" --hostname "$hostname" \
-        --allow-server-ssh --enable-ssh-root --disable-ssh-auth
+        --allow-server-ssh --enable-ssh-root --disable-ssh-auth \
+        --disable-client-routes
+      # ^ The mesh pushes an exit node (0.0.0.0/0, ::/0). Accepting it sends all of
+      # this box's internet traffic into the mesh, and apt / get.k3s.io hang.
+      # Peer-to-peer mesh IPs don't need client routes.
       ;;
   esac
 }
@@ -46,7 +50,9 @@ vpn_ip() {
   for i in $(seq 1 30); do
     case "$VPN_PROVIDER" in
       tailscale) ip=$(tailscale ip -4 2>/dev/null | head -1) ;;
-      netbird)   ip=$(sudo netbird status --json 2>/dev/null | jq -r '.netbirdIp // empty' | cut -d/ -f1) ;;
+      # Bounded: `netbird status` is an RPC to the daemon and blocks while it is
+      # still syncing peers, which turned this "retry 30x" loop into a silent hang.
+      netbird)   ip=$(sudo timeout 10 netbird status --json 2>/dev/null | jq -r '.netbirdIp // empty' | cut -d/ -f1) ;;
     esac
     [[ -n "$ip" ]] && { echo "$ip"; return 0; }
     sleep 2
