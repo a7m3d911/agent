@@ -15,10 +15,16 @@ if [[ -z "$LINUX_USER_PASSWORD" ]]; then
   exit 3
 fi
 
-# if [[ -z "$NETBIRD_MANAGEMENT_URL" || -z "$NETBIRD_SETUP_KEY" ]]; then
-#   echo "Please set 'NETBIRD_MANAGEMENT_URL' and 'NETBIRD_SETUP_KEY'"
-#   exit 2
-# fi
+if [[ -z "$NETBIRD_MANAGEMENT_URL" || -z "$NETBIRD_SETUP_KEY" ]]; then
+  echo "Please set 'NETBIRD_MANAGEMENT_URL' and 'NETBIRD_SETUP_KEY'"
+  exit 2
+fi
+
+# Same mesh helpers as linux-ser.sh: they ignore the mesh's exit-node route
+# (--disable-client-routes) and bound `netbird status`, the two things that
+# used to hang every run right after `netbird up`.
+VPN_PROVIDER=netbird
+source "$(dirname "$0")/scripts/vpn.sh"
 
 # Second way in, independent of NetBird. Optional: skipped when the key is unset.
 if [[ -n "$TAILSCALE_AUTH_KEY" ]]; then
@@ -32,8 +38,8 @@ else
   echo "TAILSCALE_AUTH_KEY unset — skipping Tailscale"
 fi
 
-# echo "### Install netbird ###"
-# curl -fsSL https://pkgs.netbird.io/install.sh | sh
+echo "### Install netbird ###"
+vpn_install
 
 echo "### Update user: $USER password ###"
 echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
@@ -59,8 +65,11 @@ for u in "$USER" "$LINUX_USERNAME" root; do
   echo "$GH_TOKEN" | sudo -u "$u" -H env -u GH_TOKEN -u XDG_CONFIG_HOME timeout 60 gh auth login --with-token
 done
 
-# # Network calls go BEFORE netbird up: every run hung on the first one made after it.
-# sudo netbird up --management-url "$NETBIRD_MANAGEMENT_URL" --setup-key "$NETBIRD_SETUP_KEY" --hostname "$LINUX_MACHINE_NAME" --allow-server-ssh --enable-ssh-root
+echo "### Join the NetBird mesh as $LINUX_MACHINE_NAME ###"
+# Non-fatal, like Tailscale above: the box is still reachable the other way.
+vpn_up "$LINUX_MACHINE_NAME" \
+  && echo "NetBird: netbird ssh root@$(vpn_ip)" \
+  || echo "Failed to start NetBird"
 
 
 
