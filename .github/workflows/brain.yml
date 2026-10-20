@@ -37,6 +37,11 @@ jobs:
           # Set → the box is a cloud worker (pool); unset → a remote-shared device.
           BRAIN_WORKER_POOL_TOKEN: ${{ secrets.BRAIN_WORKER_POOL_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          # Set → also runs `npx @marbit/e2e-worker` as a second process.
+          E2E_API_URL: ${{ secrets.E2E_API_URL }}
+          E2E_POOL_TOKEN: ${{ secrets.E2E_POOL_TOKEN }}
+          # Auth for registry.marbit.dev (@marbit scope).
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           # Run-scoped so overlapping boxes don't collide on the tailnet.
           LINUX_MACHINE_NAME: brain-${{ github.run_number }}
 

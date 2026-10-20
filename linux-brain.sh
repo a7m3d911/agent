@@ -45,6 +45,24 @@ curl -fsSL https://raw.githubusercontent.com/ahmed3mar/brain/main/install.sh | s
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 [[ -n "${GITHUB_PATH:-}" ]] && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+if [[ -n "${E2E_POOL_TOKEN:-}" ]]; then
+  echo "### Start e2e worker ###"
+  # @marbit/* lives on the private registry. The literal ${NPM_TOKEN} is expanded
+  # by npm at read time, so the token never lands on disk.
+  if [[ -n "${NPM_TOKEN:-}" ]]; then
+    printf '%s\n' '@marbit:registry=https://registry.marbit.dev/' \
+      '//registry.marbit.dev/:_authToken=${NPM_TOKEN}' >> "$HOME/.npmrc"
+  fi
+  # Its own process next to Brain, in both worker and device mode.
+  # ponytail: no drain/handoff; it dies with the VM. Add one if e2e runs get cut mid-test.
+  nohup env E2E_API_URL="${E2E_API_URL:?E2E_API_URL unset}" E2E_POOL_TOKEN="$E2E_POOL_TOKEN" \
+    npx -y @marbit/e2e-worker@latest > "$HOME/e2e-worker.log" 2>&1 < /dev/null &
+  E2E_PID=$!
+  sleep 15
+  cat "$HOME/e2e-worker.log" || true
+  kill -0 "$E2E_PID" # fail the step if the e2e worker already exited
+fi
+
 if [[ -n "${BRAIN_WORKER_POOL_TOKEN:-}" ]]; then
   # Registers its own worker in the pool; later steps drain and hand off its tasks.
   export BRAIN_WORKER_ROOT="${RUNNER_TEMP:-$HOME}/brain"
