@@ -54,6 +54,7 @@ if [[ -n "${E2E_POOL_TOKEN:-}" ]]; then
       '//registry.marbit.dev/:_authToken=${NPM_TOKEN}' >> "$HOME/.npmrc"
   fi
   # Its own process next to Brain, in both worker and device mode.
+  # From 0.2.0 it updates itself when e2e asks (artisan worker:update, or the console); a new box takes @latest.
   # ponytail: no drain/handoff; it dies with the VM. Add one if e2e runs get cut mid-test.
   nohup env E2E_API_URL="${E2E_API_URL:?E2E_API_URL unset}" E2E_POOL_TOKEN="$E2E_POOL_TOKEN" \
     npx -y @marbit/e2e-worker@latest > "$HOME/e2e-worker.log" 2>&1 < /dev/null &
